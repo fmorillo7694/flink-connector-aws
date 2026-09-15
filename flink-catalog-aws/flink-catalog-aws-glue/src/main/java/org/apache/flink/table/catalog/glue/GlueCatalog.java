@@ -92,11 +92,6 @@ public class GlueCatalog extends AbstractCatalog {
 
     private static final Logger LOG = LoggerFactory.getLogger(GlueCatalog.class);
 
-    // Constants for client cleanup retry logic
-    private static final int MAX_CLOSE_RETRIES = 3;
-    private static final long INITIAL_RETRY_DELAY_MS = 200L;
-    private static final int RETRY_DELAY_MULTIPLIER = 2;
-
     private GlueClient glueClient;
     private GlueTypeConverter glueTypeConverter;
     private GlueDatabaseOperator glueDatabaseOperations;
@@ -209,40 +204,9 @@ public class GlueCatalog extends AbstractCatalog {
     public void close() throws CatalogException {
         if (glueClient != null) {
             LOG.info("Closing GlueCatalog client");
-            int maxRetries = MAX_CLOSE_RETRIES;
-            int retryCount = 0;
-            long retryDelayMs = INITIAL_RETRY_DELAY_MS;
-            while (retryCount < maxRetries) {
-                try {
-                    glueClient.close();
-                    LOG.info("Successfully closed GlueCatalog client");
-                    return;
-                } catch (RuntimeException e) {
-                    retryCount++;
-                    if (retryCount >= maxRetries) {
-                        LOG.warn(
-                                "Failed to close GlueCatalog client after {} retries",
-                                maxRetries,
-                                e);
-                        throw new CatalogException("Failed to close GlueCatalog client", e);
-                    }
-                    LOG.warn(
-                            "Failed to close GlueCatalog client (attempt {}/{}), retrying in {} ms",
-                            retryCount,
-                            maxRetries,
-                            retryDelayMs,
-                            e);
-                    try {
-                        Thread.sleep(retryDelayMs);
-                        // Exponential backoff
-                        retryDelayMs *= RETRY_DELAY_MULTIPLIER;
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new CatalogException(
-                                "Interrupted while retrying to close GlueCatalog client", ie);
-                    }
-                }
-            }
+            // The AWS SDK close() is best-effort and does not surface exceptions,
+            // so no retry logic is required here.
+            glueClient.close();
         }
     }
 
@@ -809,7 +773,8 @@ public class GlueCatalog extends AbstractCatalog {
             throws TableNotExistException, TableNotPartitionedException, CatalogException {
         GlueTableRef tableRef = resolvePartitionedTable(objectPath);
         List<String> partitionKeys = tableRef.partitionKeys();
-        return gluePartitionOperations.listPartitions(tableRef.databaseName, tableRef.tableName)
+        return gluePartitionOperations
+                .listPartitions(tableRef.databaseName, tableRef.tableName)
                 .stream()
                 .map(partition -> toPartitionSpec(partitionKeys, partition.values()))
                 .collect(Collectors.toList());
@@ -818,8 +783,10 @@ public class GlueCatalog extends AbstractCatalog {
     @Override
     public List<CatalogPartitionSpec> listPartitions(
             ObjectPath objectPath, CatalogPartitionSpec catalogPartitionSpec)
-            throws TableNotExistException, TableNotPartitionedException,
-                    PartitionSpecInvalidException, CatalogException {
+            throws TableNotExistException,
+                    TableNotPartitionedException,
+                    PartitionSpecInvalidException,
+                    CatalogException {
         GlueTableRef tableRef = resolvePartitionedTable(objectPath);
         List<String> partitionKeys = tableRef.partitionKeys();
 
@@ -833,7 +800,8 @@ public class GlueCatalog extends AbstractCatalog {
                     getName(), partitionKeys, objectPath, catalogPartitionSpec);
         }
 
-        return gluePartitionOperations.listPartitions(tableRef.databaseName, tableRef.tableName)
+        return gluePartitionOperations
+                .listPartitions(tableRef.databaseName, tableRef.tableName)
                 .stream()
                 .map(partition -> toPartitionSpec(partitionKeys, partition.values()))
                 .filter(
@@ -892,8 +860,10 @@ public class GlueCatalog extends AbstractCatalog {
             CatalogPartitionSpec catalogPartitionSpec,
             CatalogPartition catalogPartition,
             boolean ifNotExists)
-            throws TableNotExistException, TableNotPartitionedException,
-                    PartitionSpecInvalidException, PartitionAlreadyExistsException,
+            throws TableNotExistException,
+                    TableNotPartitionedException,
+                    PartitionSpecInvalidException,
+                    PartitionAlreadyExistsException,
                     CatalogException {
         GlueTableRef tableRef = resolvePartitionedTable(objectPath);
         List<String> partitionKeys = tableRef.partitionKeys();
@@ -1619,8 +1589,7 @@ public class GlueCatalog extends AbstractCatalog {
 
         // Convert to view-specific TableInput by overriding view-specific fields
         TableInput viewInput =
-                baseTableInput
-                        .toBuilder()
+                baseTableInput.toBuilder()
                         .tableType(CatalogBaseTable.TableKind.VIEW.name())
                         .viewOriginalText(catalogView.getOriginalQuery())
                         .viewExpandedText(catalogView.getExpandedQuery())

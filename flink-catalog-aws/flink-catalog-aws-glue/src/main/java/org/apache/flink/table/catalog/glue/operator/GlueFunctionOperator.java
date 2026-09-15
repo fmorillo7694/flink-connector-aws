@@ -196,15 +196,15 @@ public class GlueFunctionOperator extends GlueOperator {
     public List<String> listGlueFunctions(String databaseName) {
         GetUserDefinedFunctionsRequest.Builder functionsRequest =
                 GetUserDefinedFunctionsRequest.builder().databaseName(databaseName);
-        List<String> glueFunctions;
+        List<String> glueFunctions = new LinkedList<>();
         try {
             GetUserDefinedFunctionsResponse functionsResponse =
                     glueClient.getUserDefinedFunctions(functionsRequest.build());
             String token = functionsResponse.nextToken();
-            glueFunctions =
+            glueFunctions.addAll(
                     functionsResponse.userDefinedFunctions().stream()
                             .map(UserDefinedFunction::functionName)
-                            .collect(Collectors.toCollection(LinkedList::new));
+                            .collect(Collectors.toCollection(LinkedList::new)));
             while (Optional.ofNullable(token).isPresent()) {
                 functionsRequest.nextToken(token);
                 functionsResponse = glueClient.getUserDefinedFunctions(functionsRequest.build());

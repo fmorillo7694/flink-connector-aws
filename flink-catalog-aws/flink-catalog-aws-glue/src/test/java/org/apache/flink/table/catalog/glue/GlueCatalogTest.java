@@ -186,7 +186,8 @@ public class GlueCatalogTest {
     /** Test drop database. */
     @Test
     public void testDropDatabase()
-            throws DatabaseAlreadyExistException, DatabaseNotExistException,
+            throws DatabaseAlreadyExistException,
+                    DatabaseNotExistException,
                     DatabaseNotEmptyException {
         // Arrange
         String databaseName = "testdatabase";
@@ -225,7 +226,8 @@ public class GlueCatalogTest {
     /** Test drop non-empty database with cascade=false should throw DatabaseNotEmptyException. */
     @Test
     public void testDropNonEmptyDatabaseWithoutCascade()
-            throws DatabaseAlreadyExistException, TableAlreadyExistException,
+            throws DatabaseAlreadyExistException,
+                    TableAlreadyExistException,
                     DatabaseNotExistException {
         // Arrange
         String databaseName = "testdatabase";
@@ -264,8 +266,10 @@ public class GlueCatalogTest {
     /** Test drop non-empty database with cascade=true should succeed and delete all objects. */
     @Test
     public void testDropNonEmptyDatabaseWithCascade()
-            throws DatabaseAlreadyExistException, TableAlreadyExistException,
-                    DatabaseNotExistException, DatabaseNotEmptyException,
+            throws DatabaseAlreadyExistException,
+                    TableAlreadyExistException,
+                    DatabaseNotExistException,
+                    DatabaseNotEmptyException,
                     FunctionAlreadyExistException {
         // Arrange
         String databaseName = "testdatabase";
@@ -325,7 +329,8 @@ public class GlueCatalogTest {
     /** Test drop empty database with cascade=false should succeed. */
     @Test
     public void testDropEmptyDatabaseWithoutCascade()
-            throws DatabaseAlreadyExistException, DatabaseNotExistException,
+            throws DatabaseAlreadyExistException,
+                    DatabaseNotExistException,
                     DatabaseNotEmptyException {
         // Arrange
         String databaseName = "testdatabase";
@@ -342,7 +347,8 @@ public class GlueCatalogTest {
     /** Test drop empty database with cascade=true should succeed. */
     @Test
     public void testDropEmptyDatabaseWithCascade()
-            throws DatabaseAlreadyExistException, DatabaseNotExistException,
+            throws DatabaseAlreadyExistException,
+                    DatabaseNotExistException,
                     DatabaseNotEmptyException {
         // Arrange
         String databaseName = "testdatabase";
@@ -359,8 +365,10 @@ public class GlueCatalogTest {
     /** Test cascade drop with only tables (no views or functions). */
     @Test
     public void testDropDatabaseCascadeWithTablesOnly()
-            throws DatabaseAlreadyExistException, TableAlreadyExistException,
-                    DatabaseNotExistException, DatabaseNotEmptyException {
+            throws DatabaseAlreadyExistException,
+                    TableAlreadyExistException,
+                    DatabaseNotExistException,
+                    DatabaseNotEmptyException {
         // Arrange
         String databaseName = "testdatabase";
         String tableName1 = "testtable1";
@@ -405,7 +413,9 @@ public class GlueCatalogTest {
     /** Test create table. */
     @Test
     public void testCreateTable()
-            throws CatalogException, DatabaseAlreadyExistException, TableAlreadyExistException,
+            throws CatalogException,
+                    DatabaseAlreadyExistException,
+                    TableAlreadyExistException,
                     DatabaseNotExistException {
         // Arrange
         String databaseName = "testdatabase";
@@ -437,7 +447,8 @@ public class GlueCatalogTest {
     /** Test create table with ifNotExists=true. */
     @Test
     public void testCreateTableIfNotExists()
-            throws DatabaseAlreadyExistException, TableAlreadyExistException,
+            throws DatabaseAlreadyExistException,
+                    TableAlreadyExistException,
                     DatabaseNotExistException {
         // Arrange
         String databaseName = "testdatabase";
@@ -475,8 +486,11 @@ public class GlueCatalogTest {
     /** Test get table. */
     @Test
     public void testGetTable()
-            throws CatalogException, DatabaseAlreadyExistException, TableAlreadyExistException,
-                    DatabaseNotExistException, TableNotExistException {
+            throws CatalogException,
+                    DatabaseAlreadyExistException,
+                    TableAlreadyExistException,
+                    DatabaseNotExistException,
+                    TableNotExistException {
         String databaseName = "testdatabase";
         String tableName = "testtable";
 
@@ -525,8 +539,11 @@ public class GlueCatalogTest {
     /** Test drop table operation. */
     @Test
     public void testDropTable()
-            throws CatalogException, DatabaseAlreadyExistException, TableAlreadyExistException,
-                    DatabaseNotExistException, TableNotExistException {
+            throws CatalogException,
+                    DatabaseAlreadyExistException,
+                    TableAlreadyExistException,
+                    DatabaseNotExistException,
+                    TableNotExistException {
         // Arrange
         String databaseName = "testdatabase";
         String tableName = "testtable";
@@ -621,8 +638,10 @@ public class GlueCatalogTest {
     /** Test creating and listing views. */
     @Test
     public void testCreatingAndListingViews()
-            throws DatabaseAlreadyExistException, DatabaseNotExistException,
-                    TableAlreadyExistException, TableNotExistException {
+            throws DatabaseAlreadyExistException,
+                    DatabaseNotExistException,
+                    TableAlreadyExistException,
+                    TableNotExistException {
         // Arrange
         String databaseName = "testdatabase";
         String viewName = "testview";
@@ -673,8 +692,10 @@ public class GlueCatalogTest {
     /** Test function operations. */
     @Test
     public void testFunctionOperations()
-            throws DatabaseAlreadyExistException, DatabaseNotExistException,
-                    FunctionAlreadyExistException, FunctionNotExistException {
+            throws DatabaseAlreadyExistException,
+                    DatabaseNotExistException,
+                    FunctionAlreadyExistException,
+                    FunctionNotExistException {
         // Arrange
         String databaseName = "testdatabase";
         String functionName = "testfunction";
@@ -704,7 +725,8 @@ public class GlueCatalogTest {
     /** Test function operations with ignore flags. */
     @Test
     public void testFunctionOperationsWithIgnoreFlags()
-            throws DatabaseAlreadyExistException, DatabaseNotExistException,
+            throws DatabaseAlreadyExistException,
+                    DatabaseNotExistException,
                     FunctionAlreadyExistException {
         // Arrange
         String databaseName = "testdatabase";
@@ -732,8 +754,10 @@ public class GlueCatalogTest {
     /** Test alter function. */
     @Test
     public void testAlterFunction()
-            throws DatabaseAlreadyExistException, DatabaseNotExistException,
-                    FunctionAlreadyExistException, FunctionNotExistException {
+            throws DatabaseAlreadyExistException,
+                    DatabaseNotExistException,
+                    FunctionAlreadyExistException,
+                    FunctionNotExistException {
         // Arrange
         String databaseName = "testdatabase";
         String functionName = "testfunction";
@@ -792,8 +816,10 @@ public class GlueCatalogTest {
     /** Test drop function. */
     @Test
     public void testDropFunction()
-            throws DatabaseAlreadyExistException, DatabaseNotExistException,
-                    FunctionAlreadyExistException, FunctionNotExistException {
+            throws DatabaseAlreadyExistException,
+                    DatabaseNotExistException,
+                    FunctionAlreadyExistException,
+                    FunctionNotExistException {
         // Arrange
         String databaseName = "testdatabase";
         String functionName = "testfunction";

@@ -18,6 +18,8 @@
 
 package org.apache.flink.table.catalog.glue.operator;
 
+import org.apache.flink.util.Preconditions;
+
 import software.amazon.awssdk.services.glue.GlueClient;
 
 /**
@@ -39,7 +41,7 @@ public abstract class GlueOperator {
      * @param catalogName The catalog name associated with the Glue operations.
      */
     protected GlueOperator(GlueClient glueClient, String catalogName) {
-        this.glueClient = glueClient;
-        this.catalogName = catalogName;
+        this.glueClient = Preconditions.checkNotNull(glueClient, "glueClient cannot be null");
+        this.catalogName = Preconditions.checkNotNull(catalogName, "catalogName cannot be null");
     }
 }

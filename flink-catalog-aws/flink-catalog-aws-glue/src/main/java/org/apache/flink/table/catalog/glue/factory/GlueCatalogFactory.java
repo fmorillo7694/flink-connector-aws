@@ -72,7 +72,6 @@ public class GlueCatalogFactory implements CatalogFactory {
         String defaultDatabase =
                 config.getOrDefault(DEFAULT_DATABASE.key(), DEFAULT_DATABASE.defaultValue());
 
-        // Ensure required properties are present
         if (region == null || region.isEmpty()) {
             throw new CatalogException(
                     "The 'region' property must be specified for the Glue catalog.");

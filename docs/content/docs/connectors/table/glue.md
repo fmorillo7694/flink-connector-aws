@@ -37,6 +37,11 @@ This allows users to access Glue's metadata store directly from Flink SQL and Ta
 - Mapping between Flink and AWS Glue data types
 - Compatibility with Flink's Table API and SQL interface
 
+The Glue Catalog is registered through the Table API / SQL. DataStream applications can also
+use it by converting between DataStreams and Tables with the
+[DataStream API integration]({{< ref "docs/dev/table/data_stream_api" >}}), so tables backed by
+Glue metadata are accessible from DataStream programs through a `StreamTableEnvironment`.
+
 ## Dependencies
 
 {{< sql_download_table "glue" >}}
@@ -46,7 +51,9 @@ This allows users to access Glue's metadata store directly from Flink SQL and Ta
 Before getting started, ensure you have the following:
 
 - **AWS account** with appropriate permissions for AWS Glue and other required services
-- **AWS credentials** properly configured
+- **AWS credentials** properly configured, see the
+  [AWS documentation](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/credentials.html)
+  for the supported configuration options
 
 ## How to create a Glue Catalog
 
