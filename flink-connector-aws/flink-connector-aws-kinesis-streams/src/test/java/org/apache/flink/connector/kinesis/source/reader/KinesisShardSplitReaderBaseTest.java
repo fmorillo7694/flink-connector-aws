@@ -25,9 +25,12 @@ import org.apache.flink.connector.kinesis.source.split.KinesisShardSplit;
 import org.apache.flink.connector.kinesis.source.split.KinesisShardSplitState;
 import org.apache.flink.metrics.testutils.MetricListener;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import software.amazon.awssdk.services.kinesis.model.Record;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -41,6 +44,7 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static org.apache.flink.connector.kinesis.source.config.KinesisSourceConfigOptions.READER_EMPTY_RECORDS_FETCH_INTERVAL;
+import static org.apache.flink.connector.kinesis.source.config.KinesisSourceConfigOptions.READER_NON_EMPTY_RECORDS_FETCH_INTERVAL;
 import static org.apache.flink.connector.kinesis.source.config.KinesisSourceConfigOptions.SHARD_GET_RECORDS_MAX;
 import static org.apache.flink.connector.kinesis.source.util.TestUtil.generateShardId;
 import static org.apache.flink.connector.kinesis.source.util.TestUtil.getTestSplit;
@@ -48,6 +52,12 @@ import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 import static org.awaitility.Awaitility.await;
 
 class KinesisShardSplitReaderBaseTest {
+
+    /**
+     * Upper bound on how long ten undeferred fetches may take. Generous enough to absorb CI
+     * scheduling noise, while far below any interval a throttled reader would introduce.
+     */
+    private static final long UNTHROTTLED_FETCH_BUDGET_MILLIS = 250L;
 
     private static Configuration newConfigurationForTest() {
         return new Configuration().set(SHARD_GET_RECORDS_MAX, 50);
@@ -101,6 +111,79 @@ class KinesisShardSplitReaderBaseTest {
 
                             assertThat(reader.getFetchRecordsCallTimestamps().size()).isEqualTo(8);
                         });
+    }
+
+    @ValueSource(longs = {250L, 1000L})
+    @ParameterizedTest
+    void testGetRecordsIntervalForNonEmptySource(long interval) {
+        Configuration configuration = newConfigurationForTest();
+        configuration.set(READER_NON_EMPTY_RECORDS_FETCH_INTERVAL, Duration.ofMillis(interval));
+
+        // Given a non-empty reader with a custom interval
+        List<KinesisShardSplit> shardSplits = createShardSplits(8);
+        Map<String, KinesisShardMetrics> metrics = getShardMetrics(shardSplits);
+        CountingReader reader =
+                buildReader(NonEmptyRecordReturningReader.class, configuration, metrics);
+
+        reader.handleSplitsChanges(new SplitsAddition<>(shardSplits));
+
+        // When records are fetched continuously
+        await().pollInSameThread()
+                .pollInterval(Duration.ofMillis(1))
+                .atMost(interval + 1000L, TimeUnit.MILLISECONDS)
+                .untilAsserted(
+                        () -> {
+                            reader.fetch();
+
+                            // Then call fetch record at intervals
+                            for (List<Long> fetchRecordsCallTimes :
+                                    reader.getFetchRecordsCallTimestamps().values()) {
+                                assertThat(fetchRecordsCallTimes.size()).isEqualTo(2);
+
+                                // Ensure the interval between fetchRecord calls respects the
+                                // configured interval. Only the lower bound is asserted: an upper
+                                // bound would be flaky on loaded CI machines.
+                                assertThat(
+                                                fetchRecordsCallTimes.get(1)
+                                                        - fetchRecordsCallTimes.get(0))
+                                        .isGreaterThanOrEqualTo(interval);
+                            }
+
+                            assertThat(reader.getFetchRecordsCallTimestamps().size()).isEqualTo(8);
+                        });
+    }
+
+    @Test
+    void testNoGetRecordsIntervalForNonEmptySourceByDefault() throws Exception {
+        // Given a non-empty reader without a configured non-empty records fetch interval
+        Configuration configuration = newConfigurationForTest();
+        assertThat(configuration.getOptional(READER_NON_EMPTY_RECORDS_FETCH_INTERVAL)).isEmpty();
+
+        List<KinesisShardSplit> shardSplits = createShardSplits(1);
+        Map<String, KinesisShardMetrics> metrics = getShardMetrics(shardSplits);
+        CountingReader reader =
+                buildReader(NonEmptyRecordReturningReader.class, configuration, metrics);
+
+        reader.handleSplitsChanges(new SplitsAddition<>(shardSplits));
+
+        // When records are fetched repeatedly
+        for (int i = 0; i < 10; i++) {
+            reader.fetch();
+        }
+
+        // Then every fetch reaches fetchRecords() without being deferred, preserving the
+        // fetch-at-first-opportunity behaviour of an unconfigured reader
+        assertThat(reader.getFetchRecordsCallTimestamps().size()).isEqualTo(1);
+        List<Long> fetchRecordsCallTimes =
+                reader.getFetchRecordsCallTimestamps().values().iterator().next();
+        assertThat(fetchRecordsCallTimes.size()).isEqualTo(10);
+
+        // Consecutive fetches are not spaced out by an interval. Ten undeferred fetches take
+        // microseconds, so any per-fetch throttling would blow this budget comfortably.
+        long elapsedMillis =
+                fetchRecordsCallTimes.get(fetchRecordsCallTimes.size() - 1)
+                        - fetchRecordsCallTimes.get(0);
+        assertThat(elapsedMillis).isLessThan(UNTHROTTLED_FETCH_BUDGET_MILLIS);
     }
 
     private static Stream<Arguments> readerTypeAndShardCount() {
@@ -157,6 +240,8 @@ class KinesisShardSplitReaderBaseTest {
             return new NullReturningReader(metrics, configuration);
         } else if (readerClass == EmptyRecordReturningReader.class) {
             return new EmptyRecordReturningReader(metrics, configuration);
+        } else if (readerClass == NonEmptyRecordReturningReader.class) {
+            return new NonEmptyRecordReturningReader(metrics, configuration);
         }
 
         throw new RuntimeException(
@@ -221,6 +306,19 @@ class KinesisShardSplitReaderBaseTest {
         protected RecordBatch fetchRecords(KinesisShardSplitState splitState) {
             super.fetchRecords(splitState);
             return new RecordBatch(Collections.emptyList(), 0L, false);
+        }
+    }
+
+    static class NonEmptyRecordReturningReader extends CountingReader {
+        public NonEmptyRecordReturningReader(
+                Map<String, KinesisShardMetrics> shardMetricGroupMap, Configuration configuration) {
+            super(shardMetricGroupMap, configuration);
+        }
+
+        @Override
+        protected RecordBatch fetchRecords(KinesisShardSplitState splitState) {
+            super.fetchRecords(splitState);
+            return new RecordBatch(Collections.singletonList(Record.builder().build()), 0L, false);
         }
     }
 
