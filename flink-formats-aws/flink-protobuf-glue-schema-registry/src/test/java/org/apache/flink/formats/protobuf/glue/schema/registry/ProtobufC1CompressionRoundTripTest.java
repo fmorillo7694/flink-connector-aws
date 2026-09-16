@@ -69,8 +69,10 @@ class ProtobufC1CompressionRoundTripTest {
 
     /** GSR header version byte. */
     private static final byte HEADER_VERSION = (byte) 0x03;
+
     /** GSR compression byte: no compression. */
     private static final byte COMPRESSION_NONE = (byte) 0x00;
+
     /** GSR compression byte: ZLIB (matches the SDK's ZLIB compression byte). */
     private static final byte COMPRESSION_ZLIB = (byte) 0x05;
 
