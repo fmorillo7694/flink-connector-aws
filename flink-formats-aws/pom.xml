@@ -38,6 +38,7 @@ under the License.
         <module>flink-json-glue-schema-registry</module>
         <module>flink-protobuf-glue-schema-registry</module>
         <module>flink-sql-avro-glue-schema-registry</module>
+        <module>flink-sql-json-glue-schema-registry</module>
         <module>flink-sql-protobuf-glue-schema-registry</module>
     </modules>
 
