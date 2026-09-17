@@ -47,13 +47,16 @@ import org.apache.flink.table.catalog.exceptions.PartitionSpecInvalidException;
 import org.apache.flink.table.catalog.exceptions.TableAlreadyExistException;
 import org.apache.flink.table.catalog.exceptions.TableNotExistException;
 import org.apache.flink.table.catalog.exceptions.TableNotPartitionedException;
-import org.apache.flink.table.catalog.glue.operator.FakeGlueClient;
 import org.apache.flink.table.catalog.glue.operator.GlueDatabaseOperator;
 import org.apache.flink.table.catalog.glue.operator.GlueTableOperator;
+import org.apache.flink.table.catalog.glue.util.GlueTestClientFactory;
+import org.apache.flink.table.catalog.glue.util.RealGlueCleanupExtension;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import software.amazon.awssdk.services.glue.GlueClient;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -68,24 +71,25 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Comprehensive tests for GlueCatalog. Covers basic operations, advanced features, and edge cases.
  */
+@ExtendWith(RealGlueCleanupExtension.class)
 public class GlueCatalogTest {
 
-    private FakeGlueClient fakeGlueClient;
+    private GlueClient glueClient;
     private GlueCatalog glueCatalog;
     private GlueTableOperator glueTableOperations;
     private GlueDatabaseOperator glueDatabaseOperations;
 
     @BeforeEach
     void setUp() {
-        // Reset the state of FakeGlueClient before each test
-        FakeGlueClient.reset();
+        // In-memory FakeGlueClient by default (CI); real AWS Glue when credentials are
+        // supplied - see GlueTestClientFactory.
         String region = "us-east-1";
         String defaultDB = "default";
-        fakeGlueClient = new FakeGlueClient();
-        glueTableOperations = new GlueTableOperator(fakeGlueClient, "testCatalog");
-        glueDatabaseOperations = new GlueDatabaseOperator(fakeGlueClient, "testCatalog");
+        glueClient = GlueTestClientFactory.createClient();
+        glueTableOperations = new GlueTableOperator(glueClient, "testCatalog");
+        glueDatabaseOperations = new GlueDatabaseOperator(glueClient, "testCatalog");
 
-        glueCatalog = new GlueCatalog("glueCatalog", defaultDB, region, fakeGlueClient);
+        glueCatalog = new GlueCatalog("glueCatalog", defaultDB, region, glueClient);
     }
 
     @AfterEach
@@ -111,7 +115,7 @@ public class GlueCatalogTest {
                             // Create catalog with parameters but no client
                             GlueCatalog catalog =
                                     new GlueCatalog(
-                                            "glueCatalog", "default", "us-east-1", fakeGlueClient);
+                                            "glueCatalog", "default", "us-east-1", glueClient);
                             // Use our fake client to avoid AWS SDK issues
                             catalog.open();
                             catalog.close();
@@ -139,7 +143,7 @@ public class GlueCatalogTest {
     @Test
     public void testCreateDatabase() throws CatalogException, DatabaseAlreadyExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         CatalogDatabase catalogDatabase = new CatalogDatabaseImpl(Collections.emptyMap(), "test");
 
         // Act
@@ -153,7 +157,7 @@ public class GlueCatalogTest {
     @Test
     public void testDatabaseExists() throws DatabaseAlreadyExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         CatalogDatabase catalogDatabase = new CatalogDatabaseImpl(Collections.emptyMap(), "test");
         glueCatalog.createDatabase(databaseName, catalogDatabase, false);
 
@@ -166,7 +170,7 @@ public class GlueCatalogTest {
     @Test
     public void testCreateDatabaseIfNotExists() throws DatabaseAlreadyExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         CatalogDatabase catalogDatabase = new CatalogDatabaseImpl(Collections.emptyMap(), "test");
 
         // Create database first time
@@ -190,7 +194,7 @@ public class GlueCatalogTest {
                     DatabaseNotExistException,
                     DatabaseNotEmptyException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         CatalogDatabase catalogDatabase = new CatalogDatabaseImpl(Collections.emptyMap(), "test");
         glueCatalog.createDatabase(databaseName, catalogDatabase, false);
 
@@ -230,7 +234,7 @@ public class GlueCatalogTest {
                     TableAlreadyExistException,
                     DatabaseNotExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String tableName = "testtable";
 
         // Create database
@@ -272,7 +276,7 @@ public class GlueCatalogTest {
                     DatabaseNotEmptyException,
                     FunctionAlreadyExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String tableName = "testtable";
         String viewName = "testview";
         String functionName = "testfunction";
@@ -333,7 +337,7 @@ public class GlueCatalogTest {
                     DatabaseNotExistException,
                     DatabaseNotEmptyException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         CatalogDatabase catalogDatabase = new CatalogDatabaseImpl(Collections.emptyMap(), "test");
         glueCatalog.createDatabase(databaseName, catalogDatabase, false);
 
@@ -351,7 +355,7 @@ public class GlueCatalogTest {
                     DatabaseNotExistException,
                     DatabaseNotEmptyException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         CatalogDatabase catalogDatabase = new CatalogDatabaseImpl(Collections.emptyMap(), "test");
         glueCatalog.createDatabase(databaseName, catalogDatabase, false);
 
@@ -370,7 +374,7 @@ public class GlueCatalogTest {
                     DatabaseNotExistException,
                     DatabaseNotEmptyException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String tableName1 = "testtable1";
         String tableName2 = "testtable2";
 
@@ -418,7 +422,7 @@ public class GlueCatalogTest {
                     TableAlreadyExistException,
                     DatabaseNotExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String tableName = "testtable";
 
         CatalogTable catalogTable =
@@ -451,7 +455,7 @@ public class GlueCatalogTest {
                     TableAlreadyExistException,
                     DatabaseNotExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String tableName = "testtable";
 
         CatalogTable catalogTable =
@@ -491,7 +495,7 @@ public class GlueCatalogTest {
                     TableAlreadyExistException,
                     DatabaseNotExistException,
                     TableNotExistException {
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String tableName = "testtable";
 
         CatalogTable catalogTable =
@@ -525,7 +529,7 @@ public class GlueCatalogTest {
     @Test
     public void testTableNotExist() {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String tableName = "testtable";
 
         // Act & Assert
@@ -545,7 +549,7 @@ public class GlueCatalogTest {
                     DatabaseNotExistException,
                     TableNotExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String tableName = "testtable";
 
         CatalogTable catalogTable =
@@ -578,7 +582,7 @@ public class GlueCatalogTest {
     @Test
     public void testDropTableWithIfExists() throws DatabaseAlreadyExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         CatalogDatabase catalogDatabase = new CatalogDatabaseImpl(Collections.emptyMap(), "test");
         glueCatalog.createDatabase(databaseName, catalogDatabase, false);
 
@@ -643,7 +647,7 @@ public class GlueCatalogTest {
                     TableAlreadyExistException,
                     TableNotExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String viewName = "testview";
 
         // Create database
@@ -689,6 +693,21 @@ public class GlueCatalogTest {
     // Function Operations Tests
     // -------------------------------------------------------------------------
 
+    /**
+     * Regression test: the planner's function resolution probes {@code getFunction} on the
+     * session's current database for every SQL expression and only falls back to built-in functions
+     * on {@link FunctionNotExistException}. A function lookup against a non-existent database must
+     * therefore report FunctionNotExistException, not CatalogException - otherwise any expression
+     * query fails SQL validation whenever the current database does not exist in Glue.
+     */
+    @Test
+    public void testGetFunctionInNonExistentDatabaseThrowsFunctionNotExist() {
+        ObjectPath functionPath = new ObjectPath("nonexistentdb", "somefunction");
+
+        assertThatThrownBy(() -> glueCatalog.getFunction(functionPath))
+                .isInstanceOf(FunctionNotExistException.class);
+    }
+
     /** Test function operations. */
     @Test
     public void testFunctionOperations()
@@ -697,7 +716,7 @@ public class GlueCatalogTest {
                     FunctionAlreadyExistException,
                     FunctionNotExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String functionName = "testfunction";
         ObjectPath functionPath = new ObjectPath(databaseName, functionName);
 
@@ -729,7 +748,7 @@ public class GlueCatalogTest {
                     DatabaseNotExistException,
                     FunctionAlreadyExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String functionName = "testfunction";
         ObjectPath functionPath = new ObjectPath(databaseName, functionName);
 
@@ -759,7 +778,7 @@ public class GlueCatalogTest {
                     FunctionAlreadyExistException,
                     FunctionNotExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String functionName = "testfunction";
         ObjectPath functionPath = new ObjectPath(databaseName, functionName);
 
@@ -791,7 +810,7 @@ public class GlueCatalogTest {
     public void testAlterFunctionIgnoreIfNotExists()
             throws DatabaseAlreadyExistException, DatabaseNotExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         CatalogDatabase catalogDatabase = new CatalogDatabaseImpl(Collections.emptyMap(), "test");
         glueCatalog.createDatabase(databaseName, catalogDatabase, false);
 
@@ -821,7 +840,7 @@ public class GlueCatalogTest {
                     FunctionAlreadyExistException,
                     FunctionNotExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         String functionName = "testfunction";
         ObjectPath functionPath = new ObjectPath(databaseName, functionName);
 
@@ -847,7 +866,7 @@ public class GlueCatalogTest {
     public void testDropFunctionWithIgnoreFlag()
             throws DatabaseAlreadyExistException, DatabaseNotExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         CatalogDatabase catalogDatabase = new CatalogDatabaseImpl(Collections.emptyMap(), "test");
         glueCatalog.createDatabase(databaseName, catalogDatabase, false);
 
@@ -864,7 +883,7 @@ public class GlueCatalogTest {
     @Test
     public void testFunctionExistsEdgeCases() throws DatabaseAlreadyExistException {
         // Arrange
-        String databaseName = "testdatabase";
+        String databaseName = GlueTestClientFactory.uniqueName("testdatabase");
         CatalogDatabase catalogDatabase = new CatalogDatabaseImpl(Collections.emptyMap(), "test");
         glueCatalog.createDatabase(databaseName, catalogDatabase, false);
 
@@ -898,7 +917,7 @@ public class GlueCatalogTest {
     @Test
     public void testCaseSensitivityInCatalogOperations() throws Exception {
         // Create a database with lowercase name
-        String lowerCaseName = "testdb";
+        String lowerCaseName = GlueTestClientFactory.uniqueName("testdb");
         CatalogDatabase catalogDatabase =
                 new CatalogDatabaseImpl(Collections.emptyMap(), "test_database");
         glueCatalog.createDatabase(lowerCaseName, catalogDatabase, false);
@@ -908,16 +927,18 @@ public class GlueCatalogTest {
 
         // Test case-insensitive behavior (SQL standard)
         // All these should work because SQL identifiers are case-insensitive
-        assertThat(glueCatalog.databaseExists("TESTDB")).isTrue();
-        assertThat(glueCatalog.databaseExists("TestDB")).isTrue();
-        assertThat(glueCatalog.databaseExists("testDB")).isTrue();
+        String upperCaseName = lowerCaseName.toUpperCase();
+        String mixedCaseName =
+                Character.toUpperCase(lowerCaseName.charAt(0)) + lowerCaseName.substring(1);
+        assertThat(glueCatalog.databaseExists(upperCaseName)).isTrue();
+        assertThat(glueCatalog.databaseExists(mixedCaseName)).isTrue();
 
         // This simulates what happens with SHOW DATABASES - should return original name
         List<String> databases = glueCatalog.listDatabases();
         assertThat(databases).contains(lowerCaseName);
 
         // This simulates what happens with SHOW CREATE DATABASE - should work with any case
-        CatalogDatabase retrievedDb = glueCatalog.getDatabase("TESTDB");
+        CatalogDatabase retrievedDb = glueCatalog.getDatabase(upperCaseName);
         assertThat(retrievedDb.getDescription().orElse(null)).isEqualTo("test_database");
 
         // Create a table in the database using mixed case
@@ -929,9 +950,9 @@ public class GlueCatalogTest {
         assertThat(glueCatalog.tableExists(tablePath)).isTrue();
 
         // Test case-insensitive table access (SQL standard behavior)
-        ObjectPath upperCaseDbPath = new ObjectPath("TESTDB", "testtable");
+        ObjectPath upperCaseDbPath = new ObjectPath(upperCaseName, "testtable");
         ObjectPath mixedCaseTablePath = new ObjectPath(lowerCaseName, "TestTable");
-        ObjectPath allUpperCasePath = new ObjectPath("TESTDB", "TESTTABLE");
+        ObjectPath allUpperCasePath = new ObjectPath(upperCaseName, "TESTTABLE");
 
         // All these should work due to case-insensitive behavior
         assertThat(glueCatalog.tableExists(upperCaseDbPath)).isTrue();
@@ -940,8 +961,8 @@ public class GlueCatalogTest {
 
         // List tables should work with any case variation of database name
         List<String> tables1 = glueCatalog.listTables(lowerCaseName);
-        List<String> tables2 = glueCatalog.listTables("TESTDB");
-        List<String> tables3 = glueCatalog.listTables("TestDB");
+        List<String> tables2 = glueCatalog.listTables(upperCaseName);
+        List<String> tables3 = glueCatalog.listTables(mixedCaseName);
 
         // All should return the same results
         assertThat(tables1).contains("testtable");
@@ -998,7 +1019,8 @@ public class GlueCatalogTest {
     /** Regression test for finding B2: partition keys and comment must survive a round-trip. */
     @Test
     public void testCreateTablePersistsPartitionKeysAndComment() throws Exception {
-        ObjectPath tablePath = createPartitionedTable("ptndb", "ptntable");
+        ObjectPath tablePath =
+                createPartitionedTable(GlueTestClientFactory.uniqueName("ptndb"), "ptntable");
 
         CatalogBaseTable retrieved = glueCatalog.getTable(tablePath);
 
@@ -1019,7 +1041,8 @@ public class GlueCatalogTest {
     /** Regression test for finding G1: full partition CRUD lifecycle. */
     @Test
     public void testPartitionCrudLifecycle() throws Exception {
-        ObjectPath tablePath = createPartitionedTable("ptndb2", "ptntable2");
+        ObjectPath tablePath =
+                createPartitionedTable(GlueTestClientFactory.uniqueName("ptndb2"), "ptntable2");
         CatalogPartitionSpec spec =
                 new CatalogPartitionSpec(Collections.singletonMap("region", "eu-west-1"));
 
@@ -1070,7 +1093,7 @@ public class GlueCatalogTest {
     /** Partition operations on a non-partitioned table must throw TableNotPartitionedException. */
     @Test
     public void testPartitionOpsOnNonPartitionedTable() throws Exception {
-        String databaseName = "ptndb3";
+        String databaseName = GlueTestClientFactory.uniqueName("ptndb3");
         String tableName = "flattable";
         glueCatalog.createDatabase(
                 databaseName, new CatalogDatabaseImpl(Collections.emptyMap(), "db"), true);
@@ -1092,7 +1115,8 @@ public class GlueCatalogTest {
     /** An incomplete partition spec must be rejected per the Flink Catalog contract. */
     @Test
     public void testCreatePartitionWithInvalidSpec() throws Exception {
-        ObjectPath tablePath = createPartitionedTable("ptndb4", "ptntable4");
+        ObjectPath tablePath =
+                createPartitionedTable(GlueTestClientFactory.uniqueName("ptndb4"), "ptntable4");
         CatalogPartitionSpec emptySpec = new CatalogPartitionSpec(Collections.emptyMap());
 
         assertThatThrownBy(

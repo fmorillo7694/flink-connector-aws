@@ -20,10 +20,14 @@ package org.apache.flink.table.catalog.glue.operator;
 
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.exceptions.TableNotExistException;
+import org.apache.flink.table.catalog.glue.util.GlueTestClientFactory;
+import org.apache.flink.table.catalog.glue.util.RealGlueCleanupExtension;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import software.amazon.awssdk.services.glue.GlueClient;
 import software.amazon.awssdk.services.glue.model.CreateTableRequest;
 import software.amazon.awssdk.services.glue.model.InvalidInputException;
 import software.amazon.awssdk.services.glue.model.OperationTimeoutException;
@@ -33,42 +37,48 @@ import software.amazon.awssdk.services.glue.model.TableInput;
 
 import java.util.List;
 
+import static org.assertj.core.api.Assumptions.assumeThat;
+
 /**
  * Unit tests for the GlueTableOperations class. These tests verify that table operations such as
  * create, drop, get, and list are correctly executed against the AWS Glue service.
  */
+@ExtendWith(RealGlueCleanupExtension.class)
 public class GlueTableOperationsTest {
 
     private static final String CATALOG_NAME = "testcatalog";
-    private static final String DATABASE_NAME = "testdb";
+    private String databaseName;
     private static final String TABLE_NAME = "testtable";
 
-    private FakeGlueClient fakeGlueClient;
+    private GlueClient glueClient;
     private GlueTableOperator glueTableOperations;
 
     @BeforeEach
     void setUp() {
-        FakeGlueClient.reset();
-        fakeGlueClient = new FakeGlueClient();
-        glueTableOperations = new GlueTableOperator(fakeGlueClient, CATALOG_NAME);
+        glueClient = GlueTestClientFactory.createClient();
+        glueTableOperations = new GlueTableOperator(glueClient, CATALOG_NAME);
+        databaseName = GlueTestClientFactory.uniqueName("testdb");
+        // Real Glue rejects table operations in a non-existent database (the in-memory
+        // fake is lenient), so the test database must actually exist.
+        glueClient.createDatabase(b -> b.databaseInput(db -> db.name(databaseName)));
     }
 
     @Test
     void testTableExists() {
         // Create a test table
         TableInput tableInput = TableInput.builder().name(TABLE_NAME).build();
-        fakeGlueClient.createTable(
+        glueClient.createTable(
                 CreateTableRequest.builder()
-                        .databaseName(DATABASE_NAME)
+                        .databaseName(databaseName)
                         .tableInput(tableInput)
                         .build());
 
-        Assertions.assertTrue(glueTableOperations.glueTableExists(DATABASE_NAME, TABLE_NAME));
+        Assertions.assertTrue(glueTableOperations.glueTableExists(databaseName, TABLE_NAME));
     }
 
     @Test
     void testTableExistsWhenNotFound() {
-        Assertions.assertFalse(glueTableOperations.glueTableExists(DATABASE_NAME, TABLE_NAME));
+        Assertions.assertFalse(glueTableOperations.glueTableExists(databaseName, TABLE_NAME));
     }
 
     @Test
@@ -77,18 +87,12 @@ public class GlueTableOperationsTest {
         TableInput table1 = TableInput.builder().name("table1").build();
         TableInput table2 = TableInput.builder().name("table2").build();
 
-        fakeGlueClient.createTable(
-                CreateTableRequest.builder()
-                        .databaseName(DATABASE_NAME)
-                        .tableInput(table1)
-                        .build());
-        fakeGlueClient.createTable(
-                CreateTableRequest.builder()
-                        .databaseName(DATABASE_NAME)
-                        .tableInput(table2)
-                        .build());
+        glueClient.createTable(
+                CreateTableRequest.builder().databaseName(databaseName).tableInput(table1).build());
+        glueClient.createTable(
+                CreateTableRequest.builder().databaseName(databaseName).tableInput(table2).build());
 
-        List<String> result = glueTableOperations.listTables(DATABASE_NAME);
+        List<String> result = glueTableOperations.listTables(databaseName);
         Assertions.assertEquals(2, result.size());
         Assertions.assertTrue(result.contains("table1"));
         Assertions.assertTrue(result.contains("table2"));
@@ -96,10 +100,10 @@ public class GlueTableOperationsTest {
 
     @Test
     void testListTablesWithInvalidInput() {
-        fakeGlueClient.setNextException(
-                InvalidInputException.builder().message("Invalid input").build());
+        fakeClient()
+                .setNextException(InvalidInputException.builder().message("Invalid input").build());
         Assertions.assertThrows(
-                CatalogException.class, () -> glueTableOperations.listTables(DATABASE_NAME));
+                CatalogException.class, () -> glueTableOperations.listTables(databaseName));
     }
 
     @Test
@@ -107,8 +111,8 @@ public class GlueTableOperationsTest {
         TableInput tableInput = TableInput.builder().name(TABLE_NAME).build();
 
         Assertions.assertDoesNotThrow(
-                () -> glueTableOperations.createTable(DATABASE_NAME, tableInput));
-        Assertions.assertTrue(glueTableOperations.glueTableExists(DATABASE_NAME, TABLE_NAME));
+                () -> glueTableOperations.createTable(databaseName, tableInput));
+        Assertions.assertTrue(glueTableOperations.glueTableExists(databaseName, TABLE_NAME));
     }
 
     @Test
@@ -117,7 +121,7 @@ public class GlueTableOperationsTest {
 
         // Uppercase letters should now be accepted with case preservation
         Assertions.assertDoesNotThrow(
-                () -> glueTableOperations.createTable(DATABASE_NAME, tableInput));
+                () -> glueTableOperations.createTable(databaseName, tableInput));
     }
 
     @Test
@@ -127,7 +131,7 @@ public class GlueTableOperationsTest {
         CatalogException exception =
                 Assertions.assertThrows(
                         CatalogException.class,
-                        () -> glueTableOperations.createTable(DATABASE_NAME, tableInput));
+                        () -> glueTableOperations.createTable(databaseName, tableInput));
 
         Assertions.assertTrue(
                 exception.getMessage().contains("letters, numbers, and underscores"),
@@ -141,7 +145,7 @@ public class GlueTableOperationsTest {
         CatalogException exception =
                 Assertions.assertThrows(
                         CatalogException.class,
-                        () -> glueTableOperations.createTable(DATABASE_NAME, tableInput));
+                        () -> glueTableOperations.createTable(databaseName, tableInput));
 
         Assertions.assertTrue(
                 exception.getMessage().contains("letters, numbers, and underscores"),
@@ -166,64 +170,66 @@ public class GlueTableOperationsTest {
     void testCreateTableAlreadyExists() {
         // First create the table
         TableInput tableInput = TableInput.builder().name(TABLE_NAME).build();
-        fakeGlueClient.createTable(
+        glueClient.createTable(
                 CreateTableRequest.builder()
-                        .databaseName(DATABASE_NAME)
+                        .databaseName(databaseName)
                         .tableInput(tableInput)
                         .build());
 
         // Try to create it again
         Assertions.assertThrows(
                 CatalogException.class,
-                () -> glueTableOperations.createTable(DATABASE_NAME, tableInput));
+                () -> glueTableOperations.createTable(databaseName, tableInput));
     }
 
     @Test
     void testCreateTableInvalidInput() {
         TableInput tableInput = TableInput.builder().name(TABLE_NAME).build();
 
-        fakeGlueClient.setNextException(
-                InvalidInputException.builder().message("Invalid input").build());
+        fakeClient()
+                .setNextException(InvalidInputException.builder().message("Invalid input").build());
         Assertions.assertThrows(
                 CatalogException.class,
-                () -> glueTableOperations.createTable(DATABASE_NAME, tableInput));
+                () -> glueTableOperations.createTable(databaseName, tableInput));
     }
 
     @Test
     void testCreateTableResourceLimitExceeded() {
         TableInput tableInput = TableInput.builder().name(TABLE_NAME).build();
 
-        fakeGlueClient.setNextException(
-                ResourceNumberLimitExceededException.builder()
-                        .message("Resource limit exceeded")
-                        .build());
+        fakeClient()
+                .setNextException(
+                        ResourceNumberLimitExceededException.builder()
+                                .message("Resource limit exceeded")
+                                .build());
         Assertions.assertThrows(
                 CatalogException.class,
-                () -> glueTableOperations.createTable(DATABASE_NAME, tableInput));
+                () -> glueTableOperations.createTable(databaseName, tableInput));
     }
 
     @Test
     void testCreateTableTimeout() {
         TableInput tableInput = TableInput.builder().name(TABLE_NAME).build();
 
-        fakeGlueClient.setNextException(
-                OperationTimeoutException.builder().message("Operation timed out").build());
+        fakeClient()
+                .setNextException(
+                        OperationTimeoutException.builder().message("Operation timed out").build());
         Assertions.assertThrows(
                 CatalogException.class,
-                () -> glueTableOperations.createTable(DATABASE_NAME, tableInput));
+                () -> glueTableOperations.createTable(databaseName, tableInput));
     }
 
     @Test
     void testGetGlueTable() throws TableNotExistException {
         // Create a test table
         TableInput tableInput = TableInput.builder().name(TABLE_NAME).build();
-        fakeGlueClient.createTable(
+        glueClient.createTable(
                 CreateTableRequest.builder()
-                        .databaseName(DATABASE_NAME)
+                        .databaseName(databaseName)
                         .tableInput(tableInput)
                         .build());
 
-        Table result = glueTableOperations.getGlueTable(DATABASE_NAME, TABLE_NAME);
+        Table result = glueTableOperations.getGlueTable(databaseName, TABLE_NAME);
         Assertions.assertEquals(TABLE_NAME, result.name());
     }
 
@@ -231,57 +237,58 @@ public class GlueTableOperationsTest {
     void testGetGlueTableNotFound() {
         Assertions.assertThrows(
                 TableNotExistException.class,
-                () -> glueTableOperations.getGlueTable(DATABASE_NAME, TABLE_NAME));
+                () -> glueTableOperations.getGlueTable(databaseName, TABLE_NAME));
     }
 
     @Test
     void testGetGlueTableInvalidInput() {
-        fakeGlueClient.setNextException(
-                InvalidInputException.builder().message("Invalid input").build());
+        fakeClient()
+                .setNextException(InvalidInputException.builder().message("Invalid input").build());
         Assertions.assertThrows(
                 CatalogException.class,
-                () -> glueTableOperations.getGlueTable(DATABASE_NAME, TABLE_NAME));
+                () -> glueTableOperations.getGlueTable(databaseName, TABLE_NAME));
     }
 
     @Test
     void testDropTable() {
         // First create the table
         TableInput tableInput = TableInput.builder().name(TABLE_NAME).build();
-        fakeGlueClient.createTable(
+        glueClient.createTable(
                 CreateTableRequest.builder()
-                        .databaseName(DATABASE_NAME)
+                        .databaseName(databaseName)
                         .tableInput(tableInput)
                         .build());
 
         // Then drop it
         Assertions.assertDoesNotThrow(
-                () -> glueTableOperations.dropTable(DATABASE_NAME, TABLE_NAME));
-        Assertions.assertFalse(glueTableOperations.glueTableExists(DATABASE_NAME, TABLE_NAME));
+                () -> glueTableOperations.dropTable(databaseName, TABLE_NAME));
+        Assertions.assertFalse(glueTableOperations.glueTableExists(databaseName, TABLE_NAME));
     }
 
     @Test
     void testDropTableNotFound() {
         Assertions.assertThrows(
                 TableNotExistException.class,
-                () -> glueTableOperations.dropTable(DATABASE_NAME, TABLE_NAME));
+                () -> glueTableOperations.dropTable(databaseName, TABLE_NAME));
     }
 
     @Test
     void testDropTableInvalidInput() {
-        fakeGlueClient.setNextException(
-                InvalidInputException.builder().message("Invalid input").build());
+        fakeClient()
+                .setNextException(InvalidInputException.builder().message("Invalid input").build());
         Assertions.assertThrows(
                 CatalogException.class,
-                () -> glueTableOperations.dropTable(DATABASE_NAME, TABLE_NAME));
+                () -> glueTableOperations.dropTable(databaseName, TABLE_NAME));
     }
 
     @Test
     void testDropTableTimeout() {
-        fakeGlueClient.setNextException(
-                OperationTimeoutException.builder().message("Operation timed out").build());
+        fakeClient()
+                .setNextException(
+                        OperationTimeoutException.builder().message("Operation timed out").build());
         Assertions.assertThrows(
                 CatalogException.class,
-                () -> glueTableOperations.dropTable(DATABASE_NAME, TABLE_NAME));
+                () -> glueTableOperations.dropTable(databaseName, TABLE_NAME));
     }
 
     @Test
@@ -295,8 +302,8 @@ public class GlueTableOperationsTest {
                         .build();
 
         Assertions.assertDoesNotThrow(
-                () -> glueTableOperations.createTable(DATABASE_NAME, viewInput));
-        Assertions.assertTrue(glueTableOperations.glueTableExists(DATABASE_NAME, "testview"));
+                () -> glueTableOperations.createTable(databaseName, viewInput));
+        Assertions.assertTrue(glueTableOperations.glueTableExists(databaseName, "testview"));
     }
 
     @Test
@@ -310,13 +317,13 @@ public class GlueTableOperationsTest {
                         .viewExpandedText("SELECT * FROM database.source_table")
                         .build();
 
-        fakeGlueClient.createTable(
+        glueClient.createTable(
                 CreateTableRequest.builder()
-                        .databaseName(DATABASE_NAME)
+                        .databaseName(databaseName)
                         .tableInput(viewInput)
                         .build());
 
-        Table result = glueTableOperations.getGlueTable(DATABASE_NAME, "testview");
+        Table result = glueTableOperations.getGlueTable(databaseName, "testview");
         Assertions.assertEquals("testview", result.name());
         Assertions.assertEquals("VIEW", result.tableType());
         Assertions.assertEquals("SELECT * FROM source_table", result.viewOriginalText());
@@ -334,15 +341,22 @@ public class GlueTableOperationsTest {
                         .viewExpandedText("SELECT * FROM database.source_table")
                         .build();
 
-        fakeGlueClient.createTable(
+        glueClient.createTable(
                 CreateTableRequest.builder()
-                        .databaseName(DATABASE_NAME)
+                        .databaseName(databaseName)
                         .tableInput(viewInput)
                         .build());
 
         // Try to create it again
         Assertions.assertThrows(
                 CatalogException.class,
-                () -> glueTableOperations.createTable(DATABASE_NAME, viewInput));
+                () -> glueTableOperations.createTable(databaseName, viewInput));
+    }
+
+    private FakeGlueClient fakeClient() {
+        assumeThat(glueClient)
+                .as("Fault-injection tests require the in-memory FakeGlueClient")
+                .isInstanceOf(FakeGlueClient.class);
+        return (FakeGlueClient) glueClient;
     }
 }
