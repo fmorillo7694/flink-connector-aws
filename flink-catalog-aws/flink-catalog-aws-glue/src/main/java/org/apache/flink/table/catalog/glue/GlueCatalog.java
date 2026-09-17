@@ -1136,7 +1136,10 @@ public class GlueCatalog extends AbstractCatalog {
         ObjectPath normalizedPath = normalize(functionPath);
 
         if (!databaseExists(normalizedPath.getDatabaseName())) {
-            throw new CatalogException(getName());
+            // A function in a non-existent database does not exist: report it per the
+            // Catalog contract so the planner can fall back to built-in functions instead
+            // of failing SQL validation (matches Hive/GenericInMemoryCatalog behaviour).
+            throw new FunctionNotExistException(getName(), normalizedPath);
         }
 
         boolean exists = functionExists(normalizedPath);
