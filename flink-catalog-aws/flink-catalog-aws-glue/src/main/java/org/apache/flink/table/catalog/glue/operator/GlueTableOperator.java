@@ -31,9 +31,7 @@ import software.amazon.awssdk.services.glue.GlueClient;
 import software.amazon.awssdk.services.glue.model.AlreadyExistsException;
 import software.amazon.awssdk.services.glue.model.Column;
 import software.amazon.awssdk.services.glue.model.CreateTableRequest;
-import software.amazon.awssdk.services.glue.model.CreateTableResponse;
 import software.amazon.awssdk.services.glue.model.DeleteTableRequest;
-import software.amazon.awssdk.services.glue.model.DeleteTableResponse;
 import software.amazon.awssdk.services.glue.model.EntityNotFoundException;
 import software.amazon.awssdk.services.glue.model.GetTableRequest;
 import software.amazon.awssdk.services.glue.model.GetTablesRequest;
@@ -43,7 +41,6 @@ import software.amazon.awssdk.services.glue.model.StorageDescriptor;
 import software.amazon.awssdk.services.glue.model.Table;
 import software.amazon.awssdk.services.glue.model.TableInput;
 import software.amazon.awssdk.services.glue.model.UpdateTableRequest;
-import software.amazon.awssdk.services.glue.model.UpdateTableResponse;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -105,9 +102,13 @@ public class GlueTableOperator extends GlueOperator {
      */
     public boolean glueTableExists(String glueDatabaseName, String glueTableName) {
         try {
-            glueClient.getTable(
-                    builder -> builder.databaseName(glueDatabaseName).name(glueTableName));
-            return true;
+            return glueClient
+                            .getTable(
+                                    builder ->
+                                            builder.databaseName(glueDatabaseName)
+                                                    .name(glueTableName))
+                            .table()
+                    != null;
         } catch (EntityNotFoundException e) {
             return false;
         } catch (GlueException e) {
@@ -124,36 +125,11 @@ public class GlueTableOperator extends GlueOperator {
      * @throws CatalogException if there is an error fetching the table list.
      */
     public List<String> listTables(String glueDatabaseName) {
-        try {
-            List<String> tableNames = new ArrayList<>();
-            String nextToken = null;
-
-            while (true) {
-                GetTablesRequest.Builder requestBuilder =
-                        GetTablesRequest.builder().databaseName(glueDatabaseName);
-
-                if (nextToken != null) {
-                    requestBuilder.nextToken(nextToken);
-                }
-
-                GetTablesResponse response = glueClient.getTables(requestBuilder.build());
-
-                // Just return the Glue storage names
-                for (Table table : response.tableList()) {
-                    tableNames.add(table.name());
-                }
-
-                nextToken = response.nextToken();
-
-                if (nextToken == null) {
-                    break;
-                }
-            }
-
-            return tableNames;
-        } catch (GlueException e) {
-            throw new CatalogException("Error listing tables: " + e.getMessage(), e);
+        List<String> tableNames = new ArrayList<>();
+        for (Table table : getAllGlueTables(glueDatabaseName)) {
+            tableNames.add(table.name());
         }
+        return tableNames;
     }
 
     /**
@@ -180,13 +156,9 @@ public class GlueTableOperator extends GlueOperator {
                             .databaseName(databaseName)
                             .tableInput(tableInput)
                             .build();
-            CreateTableResponse response = glueClient.createTable(request);
-            if (response == null
-                    || (response.sdkHttpResponse() != null
-                            && !response.sdkHttpResponse().isSuccessful())) {
-                throw new CatalogException(
-                        "Error creating table: " + databaseName + "." + tableInput.name());
-            }
+            // The SDK throws a typed exception for any service error, so no response
+            // inspection is needed: reaching the next statement means the call succeeded.
+            glueClient.createTable(request);
             // Log both original and storage names for clarity
             String originalTableName =
                     tableInput.parameters() != null
@@ -218,13 +190,8 @@ public class GlueTableOperator extends GlueOperator {
                             .databaseName(databaseName)
                             .tableInput(tableInput)
                             .build();
-            UpdateTableResponse response = glueClient.updateTable(request);
-            if (response == null
-                    || (response.sdkHttpResponse() != null
-                            && !response.sdkHttpResponse().isSuccessful())) {
-                throw new CatalogException(
-                        "Error updating table: " + databaseName + "." + tableInput.name());
-            }
+            // Rely on SDK typed exceptions rather than inspecting the HTTP response.
+            glueClient.updateTable(request);
             LOG.info("Updated table '{}.{}' in Glue", databaseName, tableInput.name());
         } catch (EntityNotFoundException e) {
             throw new CatalogException("Table does not exist: " + e.getMessage(), e);
@@ -271,13 +238,8 @@ public class GlueTableOperator extends GlueOperator {
         try {
             DeleteTableRequest request =
                     DeleteTableRequest.builder().databaseName(databaseName).name(tableName).build();
-            DeleteTableResponse response = glueClient.deleteTable(request);
-            if (response == null
-                    || (response.sdkHttpResponse() != null
-                            && !response.sdkHttpResponse().isSuccessful())) {
-                throw new CatalogException(
-                        "Error dropping table: " + databaseName + "." + tableName);
-            }
+            // Rely on SDK typed exceptions rather than inspecting the HTTP response.
+            glueClient.deleteTable(request);
         } catch (EntityNotFoundException e) {
             throw new TableNotExistException(catalogName, new ObjectPath(databaseName, tableName));
         } catch (GlueException e) {
@@ -411,37 +373,26 @@ public class GlueTableOperator extends GlueOperator {
     public String findGlueTableName(String glueDatabaseName, String originalTableName)
             throws CatalogException {
         try {
-            // First try the direct lowercase match (most common case)
+            // First try the direct lowercase match (most common case). A single GetTable
+            // call both proves existence and returns the metadata needed to verify the
+            // stored original name.
             String glueTableName = originalTableName.toLowerCase();
-            if (glueTableExists(glueDatabaseName, glueTableName)) {
-                // Verify this is actually the right table by checking stored original name
-                try {
-                    Table table = getGlueTable(glueDatabaseName, glueTableName);
-                    String storedOriginalName = getOriginalTableName(table);
-                    if (storedOriginalName.equals(originalTableName)) {
-                        return glueTableName;
-                    }
-                } catch (Exception e) {
-                    LOG.warn(
-                            "Error verifying table original name for: {}.{}",
-                            glueDatabaseName,
-                            glueTableName,
-                            e);
+            try {
+                Table table = getGlueTable(glueDatabaseName, glueTableName);
+                String storedOriginalName = getOriginalTableName(table);
+                if (storedOriginalName.equals(originalTableName)) {
+                    return glueTableName;
                 }
+            } catch (TableNotExistException e) {
+                // Fall through to the full search below.
             }
 
-            // If direct match failed, search all tables for original name match
-            List<String> allTables = listTables(glueDatabaseName);
-            for (String tableStorageName : allTables) {
-                try {
-                    Table table = getGlueTable(glueDatabaseName, tableStorageName);
-                    String storedOriginalName = getOriginalTableName(table);
-                    if (storedOriginalName.equals(originalTableName)) {
-                        return tableStorageName; // Return the Glue storage name
-                    }
-                } catch (Exception e) {
-                    LOG.warn("Error checking table {} during search", tableStorageName, e);
-                    // Continue searching other tables
+            // If direct match failed, search all tables for an original-name match. GetTables
+            // already returns full table metadata, so no per-table GetTable calls are needed.
+            for (Table table : getAllGlueTables(glueDatabaseName)) {
+                String storedOriginalName = getOriginalTableName(table);
+                if (storedOriginalName.equals(originalTableName)) {
+                    return table.name(); // Return the Glue storage name
                 }
             }
 
@@ -449,6 +400,36 @@ public class GlueTableOperator extends GlueOperator {
         } catch (Exception e) {
             throw new CatalogException(
                     "Error searching for table: " + glueDatabaseName + "." + originalTableName, e);
+        }
+    }
+
+    /**
+     * Lists all tables in a given database with their full metadata, handling pagination.
+     *
+     * @param glueDatabaseName The Glue storage name of the database.
+     * @return All Glue tables in the database.
+     * @throws CatalogException if there is an error fetching the tables.
+     */
+    public List<Table> getAllGlueTables(String glueDatabaseName) {
+        try {
+            List<Table> tables = new ArrayList<>();
+            String nextToken = null;
+            while (true) {
+                GetTablesRequest.Builder requestBuilder =
+                        GetTablesRequest.builder().databaseName(glueDatabaseName);
+                if (nextToken != null) {
+                    requestBuilder.nextToken(nextToken);
+                }
+                GetTablesResponse response = glueClient.getTables(requestBuilder.build());
+                tables.addAll(response.tableList());
+                nextToken = response.nextToken();
+                if (nextToken == null) {
+                    break;
+                }
+            }
+            return tables;
+        } catch (GlueException e) {
+            throw new CatalogException("Error listing tables: " + e.getMessage(), e);
         }
     }
 
@@ -461,37 +442,11 @@ public class GlueTableOperator extends GlueOperator {
      * @throws CatalogException if there is an error fetching the table list.
      */
     public List<String> listTablesWithOriginalNames(String glueDatabaseName) {
-        try {
-            List<String> originalTableNames = new ArrayList<>();
-            String nextToken = null;
-
-            while (true) {
-                GetTablesRequest.Builder requestBuilder =
-                        GetTablesRequest.builder().databaseName(glueDatabaseName);
-
-                if (nextToken != null) {
-                    requestBuilder.nextToken(nextToken);
-                }
-
-                GetTablesResponse response = glueClient.getTables(requestBuilder.build());
-
-                // Extract original names from table metadata
-                for (Table table : response.tableList()) {
-                    String originalName = getOriginalTableName(table);
-                    originalTableNames.add(originalName);
-                }
-
-                nextToken = response.nextToken();
-
-                if (nextToken == null) {
-                    break;
-                }
-            }
-
-            return originalTableNames;
-        } catch (GlueException e) {
-            throw new CatalogException("Error listing tables: " + e.getMessage(), e);
+        List<String> originalTableNames = new ArrayList<>();
+        for (Table table : getAllGlueTables(glueDatabaseName)) {
+            originalTableNames.add(getOriginalTableName(table));
         }
+        return originalTableNames;
     }
 
     /**

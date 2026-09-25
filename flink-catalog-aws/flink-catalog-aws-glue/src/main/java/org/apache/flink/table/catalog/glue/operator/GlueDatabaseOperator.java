@@ -33,7 +33,6 @@ import software.amazon.awssdk.services.glue.model.Database;
 import software.amazon.awssdk.services.glue.model.DeleteDatabaseRequest;
 import software.amazon.awssdk.services.glue.model.EntityNotFoundException;
 import software.amazon.awssdk.services.glue.model.GetDatabaseRequest;
-import software.amazon.awssdk.services.glue.model.GetDatabaseResponse;
 import software.amazon.awssdk.services.glue.model.GetDatabasesRequest;
 import software.amazon.awssdk.services.glue.model.GetDatabasesResponse;
 import software.amazon.awssdk.services.glue.model.GlueException;
@@ -162,22 +161,39 @@ public class GlueDatabaseOperator extends GlueOperator {
      * @return The Glue storage name if found, null if not found
      * @throws CatalogException if there's an error searching
      */
-    private String findGlueDatabaseName(String originalDatabaseName) throws CatalogException {
+    public String findGlueDatabaseName(String originalDatabaseName) throws CatalogException {
+        Database database = findGlueDatabase(originalDatabaseName);
+        return database == null ? null : database.name();
+    }
+
+    /**
+     * Finds the Glue database for a given original database name, returning its full metadata. The
+     * common case (lowercase match) resolves with a single GetDatabase call, which both proves
+     * existence and provides the parameters needed to verify the stored original name.
+     *
+     * @param originalDatabaseName The original database name to find
+     * @return The Glue database if found, null if not found
+     * @throws CatalogException if there's an error searching
+     */
+    private Database findGlueDatabase(String originalDatabaseName) throws CatalogException {
         try {
-            // First try the direct lowercase match (most common case)
+            // First try the direct lowercase match (most common case) with a single call.
             String glueName = toGlueDatabaseName(originalDatabaseName);
-            if (glueDatabaseExistsByGlueName(glueName)) {
-                // Verify this is actually the right database by checking stored original name
+            try {
                 Database database =
                         glueClient
                                 .getDatabase(GetDatabaseRequest.builder().name(glueName).build())
                                 .database();
-                if (database != null) {
-                    String storedOriginalName = getOriginalDatabaseName(database);
-                    if (storedOriginalName.equals(originalDatabaseName)) {
-                        return glueName;
-                    }
+                // SQL identifiers are case-insensitive: any case variation of the stored
+                // original name resolves to the same database (Glue prevents two databases
+                // from sharing the same lowercase storage name).
+                if (database != null
+                        && getOriginalDatabaseName(database)
+                                .equalsIgnoreCase(originalDatabaseName)) {
+                    return database;
                 }
+            } catch (EntityNotFoundException e) {
+                // Fall through to the full search below.
             }
 
             // If direct match failed, search all databases (for backward compatibility or edge
@@ -192,8 +208,8 @@ public class GlueDatabaseOperator extends GlueOperator {
 
                 for (Database database : response.databaseList()) {
                     String storedOriginalName = getOriginalDatabaseName(database);
-                    if (storedOriginalName.equals(originalDatabaseName)) {
-                        return database.name(); // Return the Glue storage name
+                    if (storedOriginalName.equalsIgnoreCase(originalDatabaseName)) {
+                        return database;
                     }
                 }
 
@@ -220,16 +236,9 @@ public class GlueDatabaseOperator extends GlueOperator {
     public CatalogDatabase getDatabase(String originalDatabaseName)
             throws DatabaseNotExistException, CatalogException {
         try {
-            String glueDatabaseName = findGlueDatabaseName(originalDatabaseName);
-            if (glueDatabaseName == null) {
-                throw new DatabaseNotExistException(catalogName, originalDatabaseName);
-            }
-
-            GetDatabaseResponse response =
-                    glueClient.getDatabase(
-                            GetDatabaseRequest.builder().name(glueDatabaseName).build());
-
-            Database glueDatabase = response.database();
+            // A single resolution pass both finds the database and returns its metadata,
+            // so no second GetDatabase call is needed.
+            Database glueDatabase = findGlueDatabase(originalDatabaseName);
             if (glueDatabase == null) {
                 throw new DatabaseNotExistException(catalogName, originalDatabaseName);
             }

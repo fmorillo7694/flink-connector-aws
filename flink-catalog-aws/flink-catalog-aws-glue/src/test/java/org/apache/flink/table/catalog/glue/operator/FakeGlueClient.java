@@ -79,6 +79,9 @@ import java.util.Map;
  */
 public class FakeGlueClient implements GlueClient {
 
+    /** Page size used to emulate the real service's paginated list responses. */
+    public static final int PAGE_SIZE = 50;
+
     // Static map to maintain database state across tests
     private static final Map<String, Database> DATABASE_STORE = new HashMap<>();
     private static Map<String, Map<String, Table>> tableStore =
@@ -220,8 +223,14 @@ public class FakeGlueClient implements GlueClient {
     @Override
     public GetDatabasesResponse getDatabases(GetDatabasesRequest request) {
         throwNextExceptionIfExists();
+        // Paginate like the real service so callers must handle nextToken correctly.
         List<Database> databases = new ArrayList<>(DATABASE_STORE.values());
-        return GetDatabasesResponse.builder().databaseList(databases).build();
+        int start = request.nextToken() == null ? 0 : Integer.parseInt(request.nextToken());
+        int end = Math.min(start + PAGE_SIZE, databases.size());
+        return GetDatabasesResponse.builder()
+                .databaseList(databases.subList(start, end))
+                .nextToken(end < databases.size() ? String.valueOf(end) : null)
+                .build();
     }
 
     @Override
@@ -385,8 +394,13 @@ public class FakeGlueClient implements GlueClient {
         if (!tableStore.containsKey(databaseName)) {
             return GetTablesResponse.builder().tableList(Collections.emptyList()).build();
         }
+        // Paginate like the real service so callers must handle nextToken correctly.
+        List<Table> allTables = new ArrayList<>(tableStore.get(databaseName).values());
+        int start = request.nextToken() == null ? 0 : Integer.parseInt(request.nextToken());
+        int end = Math.min(start + PAGE_SIZE, allTables.size());
         return GetTablesResponse.builder()
-                .tableList(new ArrayList<>(tableStore.get(databaseName).values()))
+                .tableList(allTables.subList(start, end))
+                .nextToken(end < allTables.size() ? String.valueOf(end) : null)
                 .build();
     }
 

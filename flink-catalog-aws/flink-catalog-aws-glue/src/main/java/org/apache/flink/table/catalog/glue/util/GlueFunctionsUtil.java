@@ -20,8 +20,9 @@ package org.apache.flink.table.catalog.glue.util;
 
 import org.apache.flink.table.catalog.CatalogFunction;
 import org.apache.flink.table.catalog.FunctionLanguage;
-import org.apache.flink.table.catalog.exceptions.CatalogException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.services.glue.model.UserDefinedFunction;
 
 import java.util.Arrays;
@@ -32,6 +33,8 @@ import java.util.stream.Collectors;
  * converting between Flink and Glue function representation.
  */
 public class GlueFunctionsUtil {
+
+    private static final Logger LOG = LoggerFactory.getLogger(GlueFunctionsUtil.class);
 
     /**
      * Extracts the class name from a Glue UserDefinedFunction.
@@ -48,8 +51,8 @@ public class GlueFunctionsUtil {
      * Determines the function language from a Glue UserDefinedFunction.
      *
      * @param glueFunction The Glue UserDefinedFunction
-     * @return The corresponding Flink FunctionLanguage
-     * @throws CatalogException if the function language cannot be determined
+     * @return The corresponding Flink FunctionLanguage; class names without a Flink language prefix
+     *     (e.g. functions created by Hive or Spark) are treated as JAVA
      */
     public static FunctionLanguage getFunctionalLanguage(final UserDefinedFunction glueFunction) {
         if (glueFunction.className().startsWith(GlueCatalogConstants.FLINK_JAVA_FUNCTION_PREFIX)) {
@@ -63,8 +66,14 @@ public class GlueFunctionsUtil {
                 .startsWith(GlueCatalogConstants.FLINK_SCALA_FUNCTION_PREFIX)) {
             return FunctionLanguage.SCALA;
         } else {
-            throw new CatalogException(
-                    "Invalid Functional Language for className: " + glueFunction.className());
+            // Functions created by other engines (e.g. Hive or Spark) store their class name
+            // without a Flink language prefix. Treat them as JAVA functions, which is the
+            // representation both engines use, instead of failing the whole lookup.
+            LOG.warn(
+                    "Function class name '{}' has no Flink language prefix; assuming JAVA. "
+                            + "Functions created by other engines may not be loadable by Flink.",
+                    glueFunction.className());
+            return FunctionLanguage.JAVA;
         }
     }
 

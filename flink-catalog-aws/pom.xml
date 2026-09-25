@@ -31,10 +31,6 @@ under the License.
     <name>Flink : Catalog : AWS : Parent</name>
     <packaging>pom</packaging>
 
-    <properties>
-        <aws.version>2.40.3</aws.version>
-        <jackson.version>2.14.2</jackson.version>
-    </properties>
 
     <dependencyManagement>
         <dependencies>
@@ -42,40 +38,24 @@ under the License.
             <dependency>
                 <groupId>software.amazon.awssdk</groupId>
                 <artifactId>glue</artifactId>
-                <version>${aws.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>software.amazon.awssdk</groupId>
-                <artifactId>sts</artifactId>
-                <version>${aws.version}</version>
+                <version>${aws.sdkv2.version}</version>
             </dependency>
             <dependency>
                 <groupId>software.amazon.awssdk</groupId>
                 <artifactId>aws-core</artifactId>
-                <version>${aws.version}</version>
+                <version>${aws.sdkv2.version}</version>
             </dependency>
             <dependency>
                 <groupId>software.amazon.awssdk</groupId>
                 <artifactId>sdk-core</artifactId>
-                <version>${aws.version}</version>
+                <version>${aws.sdkv2.version}</version>
             </dependency>
             <dependency>
                 <groupId>software.amazon.awssdk</groupId>
                 <artifactId>auth</artifactId>
-                <version>${aws.version}</version>
+                <version>${aws.sdkv2.version}</version>
             </dependency>
 
-            <!-- Other common dependencies -->
-            <dependency>
-                <groupId>org.json</groupId>
-                <artifactId>json</artifactId>
-                <version>20231013</version>
-            </dependency>
-            <dependency>
-                <groupId>com.fasterxml.jackson.core</groupId>
-                <artifactId>jackson-databind</artifactId>
-                <version>${jackson.version}</version>
-            </dependency>
         </dependencies>
     </dependencyManagement>
 
