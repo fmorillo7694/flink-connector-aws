@@ -102,6 +102,7 @@ class GlueCatalogEndToEndITCase {
     private static final String DB_NAME =
             "flink_e2e_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
     private static final String DATA_DB_NAME = DB_NAME + "_data";
+    private static final String FIDELITY_DB_NAME = DB_NAME + "_fid";
 
     private static TableEnvironment tEnv;
     private static GlueClient rawGlueClient;
@@ -167,7 +168,7 @@ class GlueCatalogEndToEndITCase {
     @AfterAll
     static void tearDown() {
         if (rawGlueClient != null) {
-            for (String db : new String[] {DB_NAME, DATA_DB_NAME}) {
+            for (String db : new String[] {DB_NAME, DATA_DB_NAME, FIDELITY_DB_NAME}) {
                 try {
                     rawGlueClient.deleteDatabase(b -> b.name(db));
                 } catch (EntityNotFoundException ignored) {
@@ -243,6 +244,67 @@ class GlueCatalogEndToEndITCase {
 
         tEnv.executeSql("DROP DATABASE " + DB_NAME);
         assertThat(sql("SHOW DATABASES")).extracting(r -> r.getField(0)).doesNotContain(DB_NAME);
+    }
+
+    @Test
+    void testSchemaFidelityEndToEnd() {
+        // Watermarks, primary keys, computed and metadata columns cannot be represented as
+        // Glue columns; they round-trip through flink.schema.* table parameters. Expression
+        // validation makes the planner probe the catalog's function APIs, so this test also
+        // exercises getFunction/functionExists against real Glue.
+        tEnv.executeSql("CREATE DATABASE IF NOT EXISTS " + FIDELITY_DB_NAME);
+        tEnv.executeSql(
+                "CREATE TABLE "
+                        + FIDELITY_DB_NAME
+                        + ".events_fidelity ("
+                        + "  userId STRING,"
+                        + "  eventTime TIMESTAMP(3),"
+                        + "  price DOUBLE,"
+                        + "  doublePrice AS price * 2,"
+                        + "  kafkaOffset BIGINT METADATA FROM 'offset' VIRTUAL,"
+                        + "  WATERMARK FOR eventTime AS eventTime - INTERVAL '5' SECOND,"
+                        + "  PRIMARY KEY (userId) NOT ENFORCED"
+                        + ") WITH ("
+                        + "  'connector' = 'kinesis',"
+                        + "  'stream.arn' = 'arn:aws:kinesis:"
+                        + REGION
+                        + ":000000000000:stream/e2e-fidelity',"
+                        + "  'format' = 'json'"
+                        + ")");
+
+        String createTable =
+                sql("SHOW CREATE TABLE " + FIDELITY_DB_NAME + ".events_fidelity")
+                        .get(0)
+                        .getField(0)
+                        .toString();
+        assertThat(createTable)
+                .contains("`doublePrice` AS `price` * 2")
+                .contains("`kafkaOffset` BIGINT METADATA FROM 'offset' VIRTUAL")
+                .contains("WATERMARK FOR `eventTime` AS `eventTime` - INTERVAL '5' SECOND")
+                .contains("PRIMARY KEY (`userId`) NOT ENFORCED");
+
+        // Column order preserved, including the interleaved non-physical columns.
+        assertThat(sql("DESCRIBE " + FIDELITY_DB_NAME + ".events_fidelity"))
+                .extracting(r -> String.valueOf(r.getField(0)))
+                .containsExactly("userId", "eventTime", "price", "doublePrice", "kafkaOffset");
+
+        // Only the physical columns land as Glue columns on the real service.
+        List<Column> glueColumns =
+                rawGlueClient
+                        .getTable(
+                                GetTableRequest.builder()
+                                        .databaseName(FIDELITY_DB_NAME)
+                                        .name("events_fidelity")
+                                        .build())
+                        .table()
+                        .storageDescriptor()
+                        .columns();
+        assertThat(glueColumns)
+                .extracting(Column::name)
+                .containsExactly("userid", "eventtime", "price");
+
+        tEnv.executeSql("DROP TABLE " + FIDELITY_DB_NAME + ".events_fidelity");
+        tEnv.executeSql("DROP DATABASE " + FIDELITY_DB_NAME);
     }
 
     @Test

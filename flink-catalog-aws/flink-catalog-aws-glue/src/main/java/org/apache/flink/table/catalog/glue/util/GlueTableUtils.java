@@ -28,6 +28,7 @@ import software.amazon.awssdk.services.glue.model.Column;
 import software.amazon.awssdk.services.glue.model.StorageDescriptor;
 import software.amazon.awssdk.services.glue.model.Table;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -121,7 +122,9 @@ public class GlueTableUtils {
      * Converts a Glue table into a Flink schema. Each Glue column is mapped to a Flink column using
      * the GlueTypeConverter. Partition columns (stored at the Glue table level, not in the storage
      * descriptor) are appended after the data columns so that declared partition keys are part of
-     * the Flink schema, as required by {@code CatalogTable}.
+     * the Flink schema, as required by {@code CatalogTable}. Computed and metadata columns,
+     * watermarks, and the primary key - which Glue columns cannot represent - are restored from the
+     * {@code flink.schema.*} table parameters written by {@link GlueFlinkSchemaProperties}.
      *
      * @param glueTable The Glue table from which the schema will be derived.
      * @return A Flink schema constructed from the Glue table's columns.
@@ -129,12 +132,22 @@ public class GlueTableUtils {
     public Schema getSchemaFromGlueTable(Table glueTable) {
         Schema.Builder schemaBuilder = Schema.newBuilder();
 
+        List<GlueFlinkSchemaProperties.PhysicalColumnSpec> physicalColumns = new ArrayList<>();
+        java.util.Set<String> notNullColumns =
+                GlueFlinkSchemaProperties.getNotNullColumns(glueTable.parameters());
         List<Column> columns =
                 glueTable.storageDescriptor() != null
                         ? glueTable.storageDescriptor().columns()
                         : Collections.emptyList();
         for (Column column : columns) {
-            addGlueColumnToSchema(column, schemaBuilder);
+            String columnName = getColumnName(column);
+            DataType convertedType = glueTypeConverter.toFlinkDataType(column.type());
+            // Glue type strings carry no nullability; restore the declared NOT NULL
+            // constraints (required for primary key columns to resolve).
+            DataType flinkDataType =
+                    notNullColumns.contains(columnName) ? convertedType.notNull() : convertedType;
+            physicalColumns.add(
+                    new GlueFlinkSchemaProperties.PhysicalColumnSpec(columnName, flinkDataType));
         }
 
         // Partition columns live in Table.partitionKeys(), not in the storage descriptor.
@@ -145,10 +158,21 @@ public class GlueTableUtils {
             List<Column> partitionColumns = glueTable.partitionKeys();
             for (int i = 0; i < partitionColumns.size(); i++) {
                 Column partitionColumn = partitionColumns.get(i);
-                DataType flinkDataType = glueTypeConverter.toFlinkDataType(partitionColumn.type());
-                schemaBuilder.column(partitionKeyNames.get(i), flinkDataType);
+                DataType convertedType = glueTypeConverter.toFlinkDataType(partitionColumn.type());
+                String partitionKeyName = partitionKeyNames.get(i);
+                DataType flinkDataType =
+                        notNullColumns.contains(partitionKeyName)
+                                ? convertedType.notNull()
+                                : convertedType;
+                physicalColumns.add(
+                        new GlueFlinkSchemaProperties.PhysicalColumnSpec(
+                                partitionKeyName, flinkDataType));
             }
         }
+
+        // Merge in computed/metadata columns and re-apply watermarks and the primary key.
+        GlueFlinkSchemaProperties.applySchemaWithNonPhysicalColumns(
+                glueTable.parameters(), physicalColumns, schemaBuilder);
 
         return schemaBuilder.build();
     }
@@ -192,12 +216,6 @@ public class GlueTableUtils {
             names.add(getColumnName(partitionColumn));
         }
         return names;
-    }
-
-    private void addGlueColumnToSchema(Column column, Schema.Builder schemaBuilder) {
-        String columnName = getColumnName(column);
-        DataType flinkDataType = glueTypeConverter.toFlinkDataType(column.type());
-        schemaBuilder.column(columnName, flinkDataType);
     }
 
     /**
