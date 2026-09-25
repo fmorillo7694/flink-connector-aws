@@ -92,6 +92,17 @@ class GlueSchemaRegistryProtobufSqlKinesisITCase {
 
     private static final String ACCESS_KEY = System.getenv("IT_CASE_GLUE_SCHEMA_ACCESS_KEY");
     private static final String SECRET_KEY = System.getenv("IT_CASE_GLUE_SCHEMA_SECRET_KEY");
+
+    /**
+     * Alternative gate for environments where extracting key material is undesirable (SSO, instance
+     * profiles, credential_process): when {@code true}, the test runs with the AWS default
+     * credential provider chain instead of explicit keys.
+     */
+    private static final boolean USE_DEFAULT_CREDENTIALS =
+            Boolean.parseBoolean(
+                    System.getenv()
+                            .getOrDefault("IT_CASE_GLUE_SCHEMA_USE_DEFAULT_CREDENTIALS", "false"));
+
     private static final String GSR_REGION =
             envOrDefault("IT_CASE_GLUE_SCHEMA_REGION", "ca-central-1");
     private static final String REGISTRY_NAME =
@@ -112,12 +123,12 @@ class GlueSchemaRegistryProtobufSqlKinesisITCase {
 
     @BeforeAll
     static void beforeAll() {
-        assumeThat(ACCESS_KEY)
-                .as("IT_CASE_GLUE_SCHEMA_ACCESS_KEY must be set to run this test")
-                .isNotBlank();
-        assumeThat(SECRET_KEY)
-                .as("IT_CASE_GLUE_SCHEMA_SECRET_KEY must be set to run this test")
-                .isNotBlank();
+        assumeThat(USE_DEFAULT_CREDENTIALS || (ACCESS_KEY != null && !ACCESS_KEY.isBlank()))
+                .as("Credentials not configured, skipping test")
+                .isTrue();
+        assumeThat(USE_DEFAULT_CREDENTIALS || (SECRET_KEY != null && !SECRET_KEY.isBlank()))
+                .as("Credentials not configured, skipping test")
+                .isTrue();
 
         System.setProperty(SdkSystemSetting.CBOR_ENABLED.property(), "false");
         MOCK_KINESIS_CONTAINER.start();
@@ -134,9 +145,12 @@ class GlueSchemaRegistryProtobufSqlKinesisITCase {
     @BeforeEach
     void setup() {
         // Seed the default AWS credential chain so the protobuf-glue format authenticates against
-        // the real Glue Schema Registry from inside the MiniCluster JVM.
-        System.setProperty("aws.accessKeyId", ACCESS_KEY);
-        System.setProperty("aws.secretAccessKey", SECRET_KEY);
+        // the real Glue Schema Registry from inside the MiniCluster JVM. In default-credentials
+        // mode the chain resolves them itself (profile, SSO, env).
+        if (!USE_DEFAULT_CREDENTIALS) {
+            System.setProperty("aws.accessKeyId", ACCESS_KEY);
+            System.setProperty("aws.secretAccessKey", SECRET_KEY);
+        }
         System.setProperty("aws.region", GSR_REGION);
 
         httpClient = AWSServicesTestUtils.createHttpClient();

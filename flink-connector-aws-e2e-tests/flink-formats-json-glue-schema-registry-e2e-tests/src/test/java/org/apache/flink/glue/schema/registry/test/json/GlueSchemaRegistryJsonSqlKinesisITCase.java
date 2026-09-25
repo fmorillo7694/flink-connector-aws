@@ -33,6 +33,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.utility.DockerImageName;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.SdkSystemSetting;
 import software.amazon.awssdk.http.SdkHttpClient;
@@ -86,6 +88,17 @@ class GlueSchemaRegistryJsonSqlKinesisITCase {
 
     private static final String ACCESS_KEY = System.getenv("IT_CASE_GLUE_SCHEMA_ACCESS_KEY");
     private static final String SECRET_KEY = System.getenv("IT_CASE_GLUE_SCHEMA_SECRET_KEY");
+
+    /**
+     * Alternative gate for environments where extracting key material is undesirable (SSO, instance
+     * profiles, credential_process): when {@code true}, the test runs with the AWS default
+     * credential provider chain instead of explicit keys.
+     */
+    private static final boolean USE_DEFAULT_CREDENTIALS =
+            Boolean.parseBoolean(
+                    System.getenv()
+                            .getOrDefault("IT_CASE_GLUE_SCHEMA_USE_DEFAULT_CREDENTIALS", "false"));
+
     private static final String GSR_REGION =
             envOrDefault("IT_CASE_GLUE_SCHEMA_REGION", "ca-central-1");
     private static final String REGISTRY_NAME =
@@ -107,20 +120,23 @@ class GlueSchemaRegistryJsonSqlKinesisITCase {
     @BeforeEach
     void setup() {
         // Skip cleanly (before starting Docker) when real GSR credentials are not configured.
-        assumeThat(ACCESS_KEY)
-                .as("IT_CASE_GLUE_SCHEMA_ACCESS_KEY not configured, skipping test")
-                .isNotBlank();
-        assumeThat(SECRET_KEY)
-                .as("IT_CASE_GLUE_SCHEMA_SECRET_KEY not configured, skipping test")
-                .isNotBlank();
+        assumeThat(USE_DEFAULT_CREDENTIALS || (ACCESS_KEY != null && !ACCESS_KEY.isBlank()))
+                .as("Credentials not configured, skipping test")
+                .isTrue();
+        assumeThat(USE_DEFAULT_CREDENTIALS || (SECRET_KEY != null && !SECRET_KEY.isBlank()))
+                .as("Credentials not configured, skipping test")
+                .isTrue();
 
         System.setProperty(SdkSystemSetting.CBOR_ENABLED.property(), "false");
 
         // Feed the GSR facade's DefaultCredentialsProvider chain. The json-glue format factory
         // builds its config map without credential keys, so it resolves credentials from the
-        // system-property / environment chain — these three properties supply them.
-        System.setProperty("aws.accessKeyId", ACCESS_KEY);
-        System.setProperty("aws.secretAccessKey", SECRET_KEY);
+        // system-property / environment chain — these properties supply them. In
+        // default-credentials mode the chain resolves them itself (profile, SSO, env).
+        if (!USE_DEFAULT_CREDENTIALS) {
+            System.setProperty("aws.accessKeyId", ACCESS_KEY);
+            System.setProperty("aws.secretAccessKey", SECRET_KEY);
+        }
         System.setProperty("aws.region", GSR_REGION);
 
         mockKinesisContainer =
@@ -501,9 +517,7 @@ class GlueSchemaRegistryJsonSqlKinesisITCase {
         try (GlueClient glueClient =
                 GlueClient.builder()
                         .region(Region.of(GSR_REGION))
-                        .credentialsProvider(
-                                StaticCredentialsProvider.create(
-                                        AwsBasicCredentials.create(ACCESS_KEY, SECRET_KEY)))
+                        .credentialsProvider(itCredentialsProvider())
                         .build()) {
             for (String schemaName : createdSchemaNames) {
                 try {
@@ -543,5 +557,13 @@ class GlueSchemaRegistryJsonSqlKinesisITCase {
     private static String envOrDefault(String name, String defaultValue) {
         String value = System.getenv(name);
         return (value == null || value.isEmpty()) ? defaultValue : value;
+    }
+
+    /** Credentials for the out-of-band verification/cleanup clients. */
+    private static AwsCredentialsProvider itCredentialsProvider() {
+        return USE_DEFAULT_CREDENTIALS
+                ? DefaultCredentialsProvider.create()
+                : StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create(ACCESS_KEY, SECRET_KEY));
     }
 }
