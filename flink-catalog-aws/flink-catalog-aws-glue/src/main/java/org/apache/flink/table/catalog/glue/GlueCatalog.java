@@ -18,7 +18,11 @@
 
 package org.apache.flink.table.catalog.glue;
 
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.connector.aws.config.AWSConfigConstants;
+import org.apache.flink.connector.aws.util.AWSClientUtil;
+import org.apache.flink.connector.aws.util.AWSGeneralUtil;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.catalog.AbstractCatalog;
 import org.apache.flink.table.catalog.CatalogBaseTable;
@@ -49,6 +53,7 @@ import org.apache.flink.table.catalog.glue.operator.GlueFunctionOperator;
 import org.apache.flink.table.catalog.glue.operator.GluePartitionOperator;
 import org.apache.flink.table.catalog.glue.operator.GlueTableOperator;
 import org.apache.flink.table.catalog.glue.util.GlueCatalogConstants;
+import org.apache.flink.table.catalog.glue.util.GlueFlinkSchemaProperties;
 import org.apache.flink.table.catalog.glue.util.GlueTableUtils;
 import org.apache.flink.table.catalog.glue.util.GlueTypeConverter;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
@@ -60,6 +65,7 @@ import org.apache.flink.util.StringUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.glue.GlueClient;
 import software.amazon.awssdk.services.glue.model.Partition;
@@ -76,6 +82,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Properties;
 import java.util.stream.Collectors;
 
 /**
@@ -88,6 +95,7 @@ import java.util.stream.Collectors;
  * databases and tables are delegated to respective helper classes like GlueDatabaseOperations and
  * GlueTableOperations.
  */
+@PublicEvolving
 public class GlueCatalog extends AbstractCatalog {
 
     private static final Logger LOG = LoggerFactory.getLogger(GlueCatalog.class);
@@ -127,27 +135,51 @@ public class GlueCatalog extends AbstractCatalog {
     }
 
     /**
-     * Constructs a GlueCatalog with default client.
+     * Constructs a GlueCatalog with default client configuration.
      *
      * @param name the name of the catalog
      * @param defaultDatabase the default database for the catalog
      * @param region the AWS region to be used for Glue operations
      */
     public GlueCatalog(String name, String defaultDatabase, String region) {
+        this(name, defaultDatabase, region, new Properties());
+    }
+
+    /**
+     * Constructs a GlueCatalog whose Glue client is built from the given AWS client properties,
+     * using the same client-creation path as the other AWS connectors ({@link AWSClientUtil}). This
+     * makes the standard {@code aws.*} settings available to the catalog - for example {@code
+     * aws.credentials.provider} to select a credential mode, {@code aws.endpoint} to point at a
+     * Glue-compatible endpoint, and the {@code aws.http-client.*} options.
+     *
+     * @param name the name of the catalog
+     * @param defaultDatabase the default database for the catalog
+     * @param region the AWS region to be used for Glue operations
+     * @param glueClientProperties AWS client properties, keyed by {@link AWSConfigConstants}
+     */
+    public GlueCatalog(
+            String name, String defaultDatabase, String region, Properties glueClientProperties) {
         super(name, defaultDatabase);
 
         // Validate region parameter
         Preconditions.checkNotNull(region, "region cannot be null");
         Preconditions.checkArgument(!region.trim().isEmpty(), "region cannot be empty");
+        Preconditions.checkNotNull(glueClientProperties, "glueClientProperties cannot be null");
 
-        // Create a synchronized client builder to avoid concurrent modification exceptions
+        Properties clientProperties = new Properties();
+        clientProperties.putAll(glueClientProperties);
+        // The explicit region argument wins over any aws.region property.
+        clientProperties.setProperty(AWSConfigConstants.AWS_REGION, region);
+        AWSGeneralUtil.validateAwsConfiguration(clientProperties);
+
         GlueClient client =
-                GlueClient.builder()
-                        .region(Region.of(region))
-                        .credentialsProvider(
-                                software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider
-                                        .create())
-                        .build();
+                AWSClientUtil.createAwsSyncClient(
+                        clientProperties,
+                        AWSGeneralUtil.createSyncHttpClient(
+                                clientProperties, ApacheHttpClient.builder()),
+                        GlueClient.builder(),
+                        GlueCatalogConstants.BASE_GLUE_USER_AGENT_PREFIX_FORMAT,
+                        GlueCatalogConstants.GLUE_CLIENT_USER_AGENT_PREFIX);
         setup(client);
     }
 
@@ -619,6 +651,10 @@ public class GlueCatalog extends AbstractCatalog {
                     originalDatabaseName,
                     originalTableName,
                     catalogBaseTable.getTableKind());
+        } catch (DatabaseNotExistException e) {
+            // Preserve the typed exception so callers can distinguish a missing database
+            // from a generic catalog failure.
+            throw e;
         } catch (Exception e) {
             throw new CatalogException(
                     String.format(
@@ -653,11 +689,8 @@ public class GlueCatalog extends AbstractCatalog {
         }
 
         try {
-            // Get all tables in the database
-            List<Table> allTables =
-                    glueClient
-                            .getTables(builder -> builder.databaseName(glueDatabaseName))
-                            .tableList();
+            // Get all tables in the database (paginated)
+            List<Table> allTables = glueTableOperations.getAllGlueTables(glueDatabaseName);
 
             // Filter tables to only include those that are of type VIEW, and return original names
             List<String> viewNames =
@@ -736,6 +769,11 @@ public class GlueCatalog extends AbstractCatalog {
                 new HashMap<>();
         for (org.apache.flink.table.catalog.Column flinkColumn :
                 resolvedTable.getResolvedSchema().getColumns()) {
+            if (!(flinkColumn instanceof org.apache.flink.table.catalog.Column.PhysicalColumn)) {
+                // Computed and metadata columns cannot be represented as Glue columns;
+                // they are persisted as flink.schema.* table parameters instead.
+                continue;
+            }
             software.amazon.awssdk.services.glue.model.Column glueColumn =
                     glueTableUtils.mapFlinkColumnToGlueColumn(flinkColumn);
             if (partitionKeys.contains(flinkColumn.getName())) {
@@ -752,6 +790,11 @@ public class GlueCatalog extends AbstractCatalog {
 
         StorageDescriptor storageDescriptor =
                 glueTableUtils.buildStorageDescriptor(tableProperties, dataColumns, tableLocation);
+
+        // Persist watermarks, primary key, and computed/metadata columns as table
+        // parameters; Glue columns can only represent physical columns.
+        GlueFlinkSchemaProperties.serializeNonPhysicalSchema(
+                resolvedTable.getResolvedSchema(), tableProperties);
 
         TableInput tableInput =
                 glueTableOperations.buildTableInput(
@@ -931,7 +974,10 @@ public class GlueCatalog extends AbstractCatalog {
                 | TableNotExistException
                 | TableNotPartitionedException e) {
             if (!ignoreIfNotExists) {
-                throw new PartitionNotExistException(getName(), objectPath, catalogPartitionSpec);
+                // Chain the original exception so the real cause (missing table, table not
+                // partitioned, or missing partition) stays visible for debugging.
+                throw new PartitionNotExistException(
+                        getName(), objectPath, catalogPartitionSpec, e);
             }
         }
     }
@@ -1092,6 +1138,23 @@ public class GlueCatalog extends AbstractCatalog {
     }
 
     /**
+     * Resolves a normalized function path to the path used against Glue: the database part is
+     * translated from the Flink database name to the Glue storage name (Glue stores database names
+     * in lowercase). The function name is left as-is because it was already normalized.
+     *
+     * @param normalizedPath the normalized function path (Flink database name)
+     * @return the function path addressed by Glue storage names
+     * @throws CatalogException if the database cannot be resolved
+     */
+    private ObjectPath toGlueFunctionPath(ObjectPath normalizedPath) throws CatalogException {
+        String glueDatabaseName = findGlueDatabaseName(normalizedPath.getDatabaseName());
+        if (glueDatabaseName == null) {
+            throw new CatalogException("Database not found: " + normalizedPath.getDatabaseName());
+        }
+        return new ObjectPath(glueDatabaseName, normalizedPath.getObjectName());
+    }
+
+    /**
      * Lists all functions in a specified database.
      *
      * @param databaseName the name of the database
@@ -1108,8 +1171,14 @@ public class GlueCatalog extends AbstractCatalog {
 
         validateDatabaseExists(databaseName);
 
+        // Use proper database name resolution (Glue stores database names in lowercase)
+        String glueDatabaseName = findGlueDatabaseName(databaseName);
+        if (glueDatabaseName == null) {
+            throw new DatabaseNotExistException(getName(), databaseName);
+        }
+
         try {
-            List<String> functions = glueFunctionsOperations.listGlueFunctions(databaseName);
+            List<String> functions = glueFunctionsOperations.listGlueFunctions(glueDatabaseName);
             return functions;
         } catch (CatalogException e) {
             LOG.error("Failed to list functions in database {}: {}", databaseName, e.getMessage());
@@ -1149,7 +1218,7 @@ public class GlueCatalog extends AbstractCatalog {
         }
 
         try {
-            return glueFunctionsOperations.getGlueFunction(normalizedPath);
+            return glueFunctionsOperations.getGlueFunction(toGlueFunctionPath(normalizedPath));
         } catch (CatalogException e) {
             throw new CatalogException(
                     String.format("Failed to get function %s", normalizedPath.getFullName()), e);
@@ -1173,7 +1242,7 @@ public class GlueCatalog extends AbstractCatalog {
         }
 
         try {
-            return glueFunctionsOperations.glueFunctionExists(normalizedPath);
+            return glueFunctionsOperations.glueFunctionExists(toGlueFunctionPath(normalizedPath));
         } catch (CatalogException e) {
             throw new CatalogException(
                     String.format(
@@ -1213,7 +1282,8 @@ public class GlueCatalog extends AbstractCatalog {
         }
 
         try {
-            glueFunctionsOperations.createGlueFunction(normalizedPath, function);
+            glueFunctionsOperations.createGlueFunction(
+                    toGlueFunctionPath(normalizedPath), function);
         } catch (CatalogException e) {
             throw new CatalogException(
                     String.format("Failed to create function %s", normalizedPath.getFullName()), e);
@@ -1262,7 +1332,8 @@ public class GlueCatalog extends AbstractCatalog {
             }
 
             // Proceed with alteration
-            glueFunctionsOperations.alterGlueFunction(normalizedPath, newFunction);
+            glueFunctionsOperations.alterGlueFunction(
+                    toGlueFunctionPath(normalizedPath), newFunction);
         } catch (CatalogException e) {
             throw new CatalogException(
                     String.format("Failed to alter function %s", normalizedPath.getFullName()), e);
@@ -1305,7 +1376,7 @@ public class GlueCatalog extends AbstractCatalog {
 
         try {
             // Function exists, proceed with dropping it
-            glueFunctionsOperations.dropGlueFunction(normalizedPath);
+            glueFunctionsOperations.dropGlueFunction(toGlueFunctionPath(normalizedPath));
         } catch (CatalogException e) {
             throw new CatalogException(
                     String.format("Failed to drop function %s", normalizedPath.getFullName()), e);
@@ -1405,7 +1476,8 @@ public class GlueCatalog extends AbstractCatalog {
                     // Filter out our internal metadata parameters
                     if (!GlueCatalogConstants.ORIGINAL_TABLE_NAME.equals(key)
                             && !GlueCatalogConstants.ORIGINAL_DATABASE_NAME.equals(key)
-                            && !GlueCatalogConstants.ORIGINAL_PARTITION_KEYS.equals(key)) {
+                            && !GlueCatalogConstants.ORIGINAL_PARTITION_KEYS.equals(key)
+                            && !GlueFlinkSchemaProperties.isSchemaParameter(key)) {
                         properties.put(key, entry.getValue());
                     }
                 }
@@ -1495,7 +1567,7 @@ public class GlueCatalog extends AbstractCatalog {
      */
     private void createRegularTable(
             ObjectPath objectPath, CatalogTable catalogTable, Map<String, String> tableProperties)
-            throws CatalogException {
+            throws CatalogException, DatabaseNotExistException {
 
         String databaseName = objectPath.getDatabaseName();
         String tableName = objectPath.getObjectName();
@@ -1514,6 +1586,11 @@ public class GlueCatalog extends AbstractCatalog {
                 new HashMap<>();
         for (org.apache.flink.table.catalog.Column flinkColumn :
                 resolvedTable.getResolvedSchema().getColumns()) {
+            if (!(flinkColumn instanceof org.apache.flink.table.catalog.Column.PhysicalColumn)) {
+                // Computed and metadata columns cannot be represented as Glue columns;
+                // they are persisted as flink.schema.* table parameters instead.
+                continue;
+            }
             software.amazon.awssdk.services.glue.model.Column glueColumn =
                     glueTableUtils.mapFlinkColumnToGlueColumn(flinkColumn);
             if (partitionKeys.contains(flinkColumn.getName())) {
@@ -1533,6 +1610,11 @@ public class GlueCatalog extends AbstractCatalog {
         StorageDescriptor storageDescriptor =
                 glueTableUtils.buildStorageDescriptor(tableProperties, dataColumns, tableLocation);
 
+        // Persist watermarks, primary key, and computed/metadata columns as table
+        // parameters; Glue columns can only represent physical columns.
+        GlueFlinkSchemaProperties.serializeNonPhysicalSchema(
+                resolvedTable.getResolvedSchema(), tableProperties);
+
         // Pass original table name to preserve case
         TableInput tableInput =
                 glueTableOperations.buildTableInput(
@@ -1545,7 +1627,7 @@ public class GlueCatalog extends AbstractCatalog {
         // Use proper database name resolution
         String glueDatabaseName = findGlueDatabaseName(databaseName);
         if (glueDatabaseName == null) {
-            throw new CatalogException("Database not found: " + databaseName);
+            throw new DatabaseNotExistException(getName(), databaseName);
         }
         glueTableOperations.createTable(glueDatabaseName, tableInput);
     }
@@ -1560,7 +1642,7 @@ public class GlueCatalog extends AbstractCatalog {
      */
     private void createView(
             ObjectPath objectPath, CatalogView catalogView, Map<String, String> tableProperties)
-            throws CatalogException {
+            throws CatalogException, DatabaseNotExistException {
 
         String databaseName = objectPath.getDatabaseName();
         String tableName = objectPath.getObjectName();
@@ -1585,10 +1667,17 @@ public class GlueCatalog extends AbstractCatalog {
                         .options(tableProperties)
                         .build();
 
-        // Build table input with proper name preservation
+        // Build table input with proper name preservation. Views have no partition keys, and
+        // the view's columns are already carried by the storage descriptor: passing them as
+        // partition columns would duplicate every column at the Glue table level (partition
+        // keys are stored outside the storage descriptor) and corrupt the view metadata.
         TableInput baseTableInput =
                 glueTableOperations.buildTableInput(
-                        tableName, glueColumns, tempTable, storageDescriptor, tableProperties);
+                        tableName,
+                        Collections.emptyList(),
+                        tempTable,
+                        storageDescriptor,
+                        tableProperties);
 
         // Convert to view-specific TableInput by overriding view-specific fields
         TableInput viewInput =
@@ -1602,56 +1691,22 @@ public class GlueCatalog extends AbstractCatalog {
         // Use proper database name resolution
         String glueDatabaseName = findGlueDatabaseName(databaseName);
         if (glueDatabaseName == null) {
-            throw new CatalogException("Database not found: " + databaseName);
+            throw new DatabaseNotExistException(getName(), databaseName);
         }
         glueTableOperations.createTable(glueDatabaseName, viewInput);
     }
 
     /**
-     * Finds the Glue storage name for a given original database name.
+     * Finds the Glue storage name for a given Flink database name.
      *
-     * @param originalDatabaseName The original database name
+     * @param flinkDatabaseName The database name as known to Flink
      * @return The Glue storage name if found, null if not found
      * @throws CatalogException if there's an error searching
      */
-    private String findGlueDatabaseName(String originalDatabaseName) throws CatalogException {
-        try {
-            // First try the direct lowercase match (most common case)
-            String glueName = originalDatabaseName.toLowerCase();
-            if (directDatabaseExists(glueName)) {
-                // Verify this is actually the right database by checking stored original name
-                try {
-                    software.amazon.awssdk.services.glue.model.Database database =
-                            glueClient
-                                    .getDatabase(
-                                            software.amazon.awssdk.services.glue.model
-                                                    .GetDatabaseRequest.builder()
-                                                    .name(glueName)
-                                                    .build())
-                                    .database();
-                    if (database != null) {
-                        String storedOriginalName = getOriginalDatabaseName(database);
-                        if (storedOriginalName.equalsIgnoreCase(originalDatabaseName)) {
-                            return glueName;
-                        }
-                    }
-                } catch (Exception e) {
-                    LOG.warn("Error verifying database original name for: {}", glueName, e);
-                }
-            }
-
-            // If direct match failed, search all databases for original name match
-            List<String> allDatabases = glueDatabaseOperations.listDatabases();
-            for (String dbName : allDatabases) {
-                if (dbName.equals(originalDatabaseName)) {
-                    return dbName.toLowerCase(); // Return the Glue storage name
-                }
-            }
-
-            return null; // Database not found
-        } catch (Exception e) {
-            throw new CatalogException("Error searching for database: " + originalDatabaseName, e);
-        }
+    private String findGlueDatabaseName(String flinkDatabaseName) throws CatalogException {
+        // Delegates to the database operator, which resolves the common (lowercase) case
+        // with a single GetDatabase call and falls back to a paginated GetDatabases scan.
+        return glueDatabaseOperations.findGlueDatabaseName(flinkDatabaseName);
     }
 
     /**
@@ -1671,18 +1726,6 @@ public class GlueCatalog extends AbstractCatalog {
         return database.name();
     }
 
-    /** Direct check if a database exists in Glue by Glue storage name. */
-    private boolean directDatabaseExists(String glueDatabaseName) {
-        try {
-            glueClient.getDatabase(builder -> builder.name(glueDatabaseName));
-            return true;
-        } catch (software.amazon.awssdk.services.glue.model.EntityNotFoundException e) {
-            return false;
-        } catch (Exception e) {
-            throw new CatalogException("Error checking database existence: " + glueDatabaseName, e);
-        }
-    }
-
     /**
      * Finds a case-insensitive conflict with existing databases in Glue storage. This prevents
      * creating databases that would conflict due to Glue's lowercase storage.
@@ -1694,32 +1737,27 @@ public class GlueCatalog extends AbstractCatalog {
         try {
             String targetGlueName = databaseName.toLowerCase();
 
-            // Check if any database already uses this Glue storage name
-            if (directDatabaseExists(targetGlueName)) {
-                // Find which original database name is using this Glue storage name
-                try {
-                    software.amazon.awssdk.services.glue.model.Database database =
-                            glueClient
-                                    .getDatabase(
-                                            software.amazon.awssdk.services.glue.model
-                                                    .GetDatabaseRequest.builder()
-                                                    .name(targetGlueName)
-                                                    .build())
-                                    .database();
-                    if (database != null) {
-                        String existingOriginalName = getOriginalDatabaseName(database);
-                        // Only return conflict if it's a different case variation
-                        if (!existingOriginalName.equals(databaseName)) {
-                            return existingOriginalName;
-                        }
-                    }
-                } catch (Exception e) {
-                    LOG.warn(
-                            "Error checking database original name for conflict detection: {}",
-                            targetGlueName,
-                            e);
-                    // If we can't verify the original name, assume conflict to be safe
-                    return targetGlueName;
+            // A single GetDatabase call both checks for a database using this Glue storage
+            // name and returns the metadata needed to read its original name.
+            software.amazon.awssdk.services.glue.model.Database database;
+            try {
+                database =
+                        glueClient
+                                .getDatabase(
+                                        software.amazon.awssdk.services.glue.model
+                                                .GetDatabaseRequest.builder()
+                                                .name(targetGlueName)
+                                                .build())
+                                .database();
+            } catch (software.amazon.awssdk.services.glue.model.EntityNotFoundException e) {
+                return null; // No database uses this Glue storage name, so no conflict
+            }
+
+            if (database != null) {
+                String existingOriginalName = getOriginalDatabaseName(database);
+                // Only return conflict if it's a different case variation
+                if (!existingOriginalName.equals(databaseName)) {
+                    return existingOriginalName;
                 }
             }
 
@@ -1748,25 +1786,19 @@ public class GlueCatalog extends AbstractCatalog {
             }
             String glueTableName = originalTableName.toLowerCase();
 
-            // Check if any table already uses this Glue storage name
-            if (glueTableOperations.glueTableExists(glueDatabaseName, glueTableName)) {
-                // Find which original table name is using this Glue storage name
-                try {
-                    Table table = glueTableOperations.getGlueTable(glueDatabaseName, glueTableName);
-                    String existingOriginalName = glueTableOperations.getOriginalTableName(table);
-                    // Only return conflict if it's a different case variation
-                    if (!existingOriginalName.equals(originalTableName)) {
-                        return existingOriginalName;
-                    }
-                } catch (Exception e) {
-                    LOG.warn(
-                            "Error checking table original name for conflict detection: {}.{}",
-                            glueDatabaseName,
-                            glueTableName,
-                            e);
-                    // If we can't verify the original name, assume conflict to be safe
-                    return glueTableName;
-                }
+            // A single GetTable call both checks for a table using this Glue storage name
+            // and returns the metadata needed to read its original name.
+            Table table;
+            try {
+                table = glueTableOperations.getGlueTable(glueDatabaseName, glueTableName);
+            } catch (TableNotExistException e) {
+                return null; // No table uses this Glue storage name, so no conflict
+            }
+
+            String existingOriginalName = glueTableOperations.getOriginalTableName(table);
+            // Only return conflict if it's a different case variation
+            if (!existingOriginalName.equals(originalTableName)) {
+                return existingOriginalName;
             }
 
             return null; // No conflict found

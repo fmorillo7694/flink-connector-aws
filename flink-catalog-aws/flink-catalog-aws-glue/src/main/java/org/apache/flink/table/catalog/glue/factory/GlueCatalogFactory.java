@@ -18,19 +18,28 @@
 
 package org.apache.flink.table.catalog.glue.factory;
 
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
+import org.apache.flink.connector.aws.table.util.AWSOptionUtils;
+import org.apache.flink.connector.aws.table.util.HttpClientOptionUtils;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.glue.GlueCatalog;
 import org.apache.flink.table.factories.CatalogFactory;
+import org.apache.flink.table.factories.FactoryUtil;
 
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 
 /** Factory for creating GlueCatalog instances. */
+@PublicEvolving
 public class GlueCatalogFactory implements CatalogFactory {
+
+    /** HTTP client implementations selectable via {@code http-client.type}. */
+    private static final String[] ALLOWED_HTTP_CLIENT_TYPES = new String[] {"APACHE"};
 
     // Define configuration options that users must provide
     public static final ConfigOption<String> REGION =
@@ -66,6 +75,13 @@ public class GlueCatalogFactory implements CatalogFactory {
 
     @Override
     public Catalog createCatalog(Context context) {
+        // Validate declared options and reject unknown ones, except the pass-through
+        // AWS client ("aws.*") and HTTP client ("http-client.*") option namespaces.
+        FactoryUtil.CatalogFactoryHelper helper =
+                FactoryUtil.createCatalogFactoryHelper(this, context);
+        helper.validateExcept(
+                AWSOptionUtils.AWS_PROPERTIES_PREFIX, HttpClientOptionUtils.CLIENT_PREFIX);
+
         Map<String, String> config = context.getOptions();
         String name = context.getName();
         String region = config.get(REGION.key());
@@ -77,6 +93,15 @@ public class GlueCatalogFactory implements CatalogFactory {
                     "The 'region' property must be specified for the Glue catalog.");
         }
 
-        return new GlueCatalog(name, defaultDatabase, region);
+        // Collect and validate the AWS client configuration (credential provider modes,
+        // endpoint override, ...) and the HTTP client options, keyed as understood by
+        // AWSClientUtil.
+        Properties glueClientProperties = new Properties();
+        glueClientProperties.putAll(new AWSOptionUtils(config).getValidatedConfigurations());
+        glueClientProperties.putAll(
+                new HttpClientOptionUtils(ALLOWED_HTTP_CLIENT_TYPES, config)
+                        .getValidatedConfigurations());
+
+        return new GlueCatalog(name, defaultDatabase, region, glueClientProperties);
     }
 }

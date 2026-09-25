@@ -49,13 +49,15 @@ under the License.
         </dependency>
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
-            <artifactId>sts</artifactId>
+            <artifactId>apache-client</artifactId>
+            <version>${aws.sdkv2.version}</version>
         </dependency>
-        
-        <!-- Other dependencies -->
+
+        <!-- Shared AWS client-creation and configuration utilities -->
         <dependency>
-            <groupId>org.json</groupId>
-            <artifactId>json</artifactId>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-aws-base</artifactId>
+            <version>${project.version}</version>
         </dependency>
 
         <!-- Test dependencies for the moto-backed integration tests -->

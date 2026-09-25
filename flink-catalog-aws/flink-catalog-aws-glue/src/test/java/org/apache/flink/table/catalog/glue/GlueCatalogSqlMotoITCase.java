@@ -47,9 +47,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code GlueCatalogFactory} via SPI, the factory builds its own {@code GlueClient}, and all
  * catalog operations flow through Flink SQL DDL and the planner down to the Glue wire protocol.
  *
- * <p>The factory-built client is pointed at moto through the AWS SDK's service-specific endpoint
- * system property ({@code aws.endpointUrlGlue}) and system-property credentials - no
- * endpoint-override code path exists in the factory, and none is needed.
+ * <p>The factory-built client is pointed at moto through the catalog's {@code aws.endpoint} option
+ * (handled by the shared AWS client-creation path) and system-property credentials, so this test
+ * also covers the factory's AWS option pass-through.
  */
 @Testcontainers
 class GlueCatalogSqlMotoITCase {
@@ -68,9 +68,8 @@ class GlueCatalogSqlMotoITCase {
         String endpoint =
                 String.format("http://%s:%d", MOTO.getHost(), MOTO.getMappedPort(MOTO_PORT));
 
-        // Route the factory-built GlueClient to moto via the SDK's service-specific endpoint
-        // and system-property credentials (first in the default credentials chain).
-        System.setProperty("aws.endpointUrlGlue", endpoint);
+        // Credentials come from system properties (first in the default credentials chain);
+        // the endpoint is routed to moto via the catalog's own 'aws.endpoint' option below.
         System.setProperty("aws.accessKeyId", "testing");
         System.setProperty("aws.secretAccessKey", "testing");
 
@@ -90,13 +89,15 @@ class GlueCatalogSqlMotoITCase {
                 "CREATE CATALOG glue_moto WITH ("
                         + "'type' = 'glue', "
                         + "'region' = 'us-east-1', "
+                        + "'aws.endpoint' = '"
+                        + endpoint
+                        + "', "
                         + "'default-database' = 'default')");
         tEnv.executeSql("USE CATALOG glue_moto");
     }
 
     @AfterAll
     static void tearDown() {
-        System.clearProperty("aws.endpointUrlGlue");
         System.clearProperty("aws.accessKeyId");
         System.clearProperty("aws.secretAccessKey");
         if (seedClient != null) {
@@ -150,5 +151,38 @@ class GlueCatalogSqlMotoITCase {
         assertThat(sql("SHOW TABLES IN sql_table_db"))
                 .extracting(row -> row.getField(0))
                 .doesNotContain("orders");
+    }
+
+    @Test
+    void testSchemaFidelityRoundTripThroughSql() {
+        // Note: watermark and computed-column DDL is exercised in the fake-backed and
+        // real-AWS tiers instead. Validating any SQL expression makes the planner probe the
+        // catalog's function APIs, and moto does not implement the Glue UDF API (HTTP 500).
+        tEnv.executeSql("CREATE DATABASE sql_fidelity_db");
+        tEnv.executeSql(
+                "CREATE TABLE sql_fidelity_db.events ("
+                        + "  userId STRING,"
+                        + "  eventTime TIMESTAMP(3),"
+                        + "  price DOUBLE,"
+                        + "  kafkaOffset BIGINT METADATA FROM 'offset' VIRTUAL,"
+                        + "  PRIMARY KEY (userId) NOT ENFORCED"
+                        + ") WITH ("
+                        + "  'connector' = 'kinesis',"
+                        + "  'stream.arn' = 'arn:aws:kinesis:us-east-1:000000000000:stream/events'"
+                        + ")");
+
+        // Read the table back through the catalog: primary key and metadata columns must
+        // survive the round-trip through Glue table parameters.
+        String createTable =
+                sql("SHOW CREATE TABLE sql_fidelity_db.events").get(0).getField(0).toString();
+
+        assertThat(createTable)
+                .contains("`kafkaOffset` BIGINT METADATA FROM 'offset' VIRTUAL")
+                .contains("PRIMARY KEY (`userId`) NOT ENFORCED");
+
+        // Column order must be preserved, including the interleaved metadata column.
+        assertThat(sql("DESCRIBE sql_fidelity_db.events"))
+                .extracting(row -> row.getField(0))
+                .containsExactly("userId", "eventTime", "price", "kafkaOffset");
     }
 }
