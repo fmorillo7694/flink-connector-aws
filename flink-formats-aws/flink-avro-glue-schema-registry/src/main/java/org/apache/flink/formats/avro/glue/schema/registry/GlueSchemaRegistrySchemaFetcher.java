@@ -19,6 +19,7 @@
 package org.apache.flink.formats.avro.glue.schema.registry;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.connector.aws.util.AWSGeneralUtil;
 
 import com.amazonaws.services.schemaregistry.utils.AWSSchemaRegistryConstants;
 import org.apache.avro.Schema;
@@ -52,7 +53,9 @@ public class GlueSchemaRegistrySchemaFetcher implements AvroSchemaResolver.Schem
 
     public GlueSchemaRegistrySchemaFetcher(Map<String, Object> configMap) {
         String region = (String) configMap.get(AWSSchemaRegistryConstants.AWS_REGION);
-        GlueClientBuilder builder = GlueClient.builder();
+        GlueClientBuilder builder =
+                GlueClient.builder()
+                        .credentialsProvider(AWSGeneralUtil.getCredentialsProvider(configMap));
         if (region != null) {
             builder.region(Region.of(region));
         }
